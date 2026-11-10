@@ -1,0 +1,84 @@
+service experimental.racket_test
+
+stdver 0.10
+
+enum Color
+    red = 1,
+    green,
+    blue = 0x10
+end
+
+struct TestStruct
+    field double d
+    field double[] darr
+    field string s
+    field int32{string} imap
+    field varvalue v
+end
+
+pod TestPod
+    field double a
+    field int32[3] b
+end
+
+namedarray Vec3
+    field double x
+    field double y
+    field double z
+end
+
+namedarray Pose
+    field Vec3 position
+    field double[4] orientation
+end
+
+object SubObj
+    property string name
+    function double add(double a, double b)
+end
+
+object TestObject
+    property double d1
+    property int32 i1
+    property uint8[] u8arr
+    property double[] darr
+    property double[3] dfix
+    property string s1
+    property bool b1
+    property cdouble c1
+    property double[*] md
+    property TestStruct st
+    property double{string} dmap
+    property string{int32} smap
+    property string{list} slist
+    property varvalue var1
+    property Color color
+    property TestPod pod1
+    property TestPod[] podarr
+    property Vec3 vec
+    property Pose pose
+    property Pose[] poses
+    property double readonly_prop [readonly]
+
+    function double add(double a, double b)
+    function void fire_event(string msg)
+    function string concat(string{list} parts)
+    function TestStruct make_struct(double d, string s)
+    function void raise_error()
+    function double{generator} count_to(int32 n)
+    function double{generator} accumulate(double{generator} x)
+    function double call_my_callback(double a)
+
+    event ev1(string msg, double val)
+
+    callback double cb1(double a)
+
+    objref SubObj sub
+    objref SubObj{int32} subs
+    objref SubObj{string} named_subs
+
+    wire double[] w_in [readonly]
+    wire double w_out [writeonly]
+
+    pipe double[] p1
+end
