@@ -1,9 +1,9 @@
 #lang racket/base
-;; Robot Raconteur client over the rr+tcp transport using Message Version 2.
+;; Robot Raconteur client over the rr+tcp and rr+ws transports using Message Version 2.
 
 (require racket/tcp racket/string racket/list racket/match racket/async-channel
          net/url net/uri-codec
-         "message.rkt" "robdef.rkt" "pack.rkt")
+         "message.rkt" "robdef.rkt" "pack.rkt" "websocket.rkt")
 
 (provide rr-connect
          rr-close
@@ -238,19 +238,30 @@
     (async-channel-put (conn-dispatch-ch c) 'stop)))
 
 ;; ---------------------------------------------------------------------------
-;; URL parsing:  rr+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
+;; URL parsing:
+;;   rr+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
+;;   rr+ws://host:port/[path]?service=name   (WebSocket, same port as rr+tcp)
+;; Returns (values transport host port http-path service nodename nodeid)
+;; where transport is 'tcp or 'ws.
 
 (define (parse-rr-url s)
   (define u (string->url s))
-  (unless (memf (lambda (x) (equal? x (url-scheme u))) '("rr+tcp" "tcp"))
-    (error 'rr-connect "only rr+tcp URLs are supported: ~a" s))
+  (define transport
+    (case (url-scheme u)
+      [("rr+tcp" "tcp") 'tcp]
+      [("rr+ws") 'ws]
+      [else (error 'rr-connect "unsupported URL scheme (expected rr+tcp or rr+ws): ~a" s)]))
   (define q (url-query u))
   (define service (cond [(assq 'service q) => cdr]
                         [else (error 'rr-connect "URL missing service: ~a" s)]))
   (define nodename (cond [(assq 'nodename q) => cdr] [else ""]))
   (define nodeid (cond [(assq 'nodeid q) => (lambda (p) (parse-nodeid (cdr p)))] [else #f]))
-  ;; the path may also hold the node name: rr+tcp://host:port/nodename?service=x
-  (values (url-host u) (or (url-port u) 48653) service nodename nodeid))
+  ;; HTTP request target for the WebSocket upgrade: everything after host:port
+  (define http-path
+    (cond [(regexp-match #px"^[^:]+://[^/?]*(.*)$" s)
+           => (lambda (m) (let ([p (cadr m)]) (if (string-prefix? p "/") p (string-append "/" p))))]
+          [else "/"]))
+  (values transport (url-host u) (or (url-port u) 48653) http-path service nodename nodeid))
 
 (define (parse-nodeid s)
   (define hex (regexp-replace* #px"[{}-]" s ""))
@@ -266,8 +277,11 @@
 (define (random-u32) (+ 1 (random 4294967087)))
 
 (define (rr-connect url #:username [username #f] #:credentials [credentials #f])
-  (define-values (host port service nodename nodeid) (parse-rr-url url))
-  (define-values (in out) (tcp-connect host port))
+  (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
+  (define-values (in out)
+    (case transport
+      [(tcp) (tcp-connect host port)]
+      [(ws) (ws-connect host port http-path)]))
   (define c (conn in out (make-semaphore 1) (random-bytes 16) nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
