@@ -34,6 +34,7 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   set -e
   raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
+            test/test-timeouts.rkt \
             test/servicetest/*.rkt
   status=0
   wait_ready() {
@@ -128,6 +129,14 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
     zone_addr=$(ip -6 addr show dev rrtest0 | sed -n "s/.*inet6 \(fe80[^/]*\).*/\1/p")
     RR_ZONE_ADDR="$zone_addr" RR_ZONE_PORT=22240 RR_ZONE_GOOD=rrtest0 RR_ZONE_BAD=rrtest1 \
       raco test test/test-zones.rkt || status=1
+    # connect timeouts: the rrtest0 address through rrtest1 is never answered
+    python3 test/hung_server.py 22260 > /tmp/hung_server.log 2>&1 &
+    hung_pid=$!
+    wait_ready /tmp/hung_server.log || status=1
+    RR_DEAD_HOST="$zone_addr%rrtest1" RR_DEAD_PORT=22240 RR_HUNG_PORT=22260 \
+      RR_HUNG_LOG=/tmp/hung_server.log RR_CLOSED_PORT=22261 \
+      raco test test/test-timeouts.rkt || status=1
+    kill $hung_pid 2>/dev/null || true
     kill $disc1 $disc2 $tap_pids 2>/dev/null || true
   else
     echo "SKIPPED: cannot create a tap interface (needs /dev/net/tun and NET_ADMIN)"

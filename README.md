@@ -60,7 +60,7 @@ Other operations:
 
 | Area | Functions |
 |---|---|
-| Connect | `rr-connect` with `#:username` and `#:credentials`; `rr-attributes`; `rr-service-definitions` |
+| Connect | `rr-connect` with `#:username`, `#:credentials` and `#:timeout` (seconds, default 10); `rr-attributes`; `rr-service-definitions` |
 | Types | `rr-new-structure`, `rr-enum-values`, `rr-pack-element` / `rr-unpack-element` |
 | Members | `rr-object-members`, `rr-member-direction` (`'both`, `'readonly` or `'writeonly`) |
 | Generators | `rr-generator-next` (returns `eof` when finished), `rr-generator-close`, `rr-generator-abort`, `rr-generator->list` |
@@ -140,6 +140,16 @@ announce on both. `test/test-discovery.rkt` then:
 - finds nodes by name and by id;
 - finds services by type and connects through the discovered URLs.
 
+`test/test-timeouts.rkt` uses the same setup to check that `rr-connect` gives
+up promptly:
+
+- an address that never answers fails after about 5 s (TCP connect timeout);
+- `#:timeout` shorter than that wins;
+- a server that accepts but never answers (`test/hung_server.py`) times out
+  for `rr+tcp` and `rr+ws`, including the 10 s default;
+- every timed-out connection is closed;
+- a closed port is still refused immediately.
+
 `test/test-zones.rkt` uses the link-local address of `rrtest0`, which only
 answers through `rrtest0`; through `rrtest1` a connect hangs. It checks that:
 
@@ -193,6 +203,13 @@ tests, the Python async API tests, and numpy helpers.
 
 - Client only. Only `rr+tcp`, `rrs+tcp`, `rr+ws` and `rr+wss`: no local or
   intra transports.
+- `rr-connect` doesn't wait for the kernel's TCP timeout (about 127 s on
+  Linux). The TCP connect gives up after 5 s, the core's default, and the
+  whole connect after `#:timeout` seconds (default 10). The whole connect
+  covers TCP, TLS, the WebSocket upgrade and the Robot Raconteur handshake.
+  On timeout everything opened for that connect is closed, and a
+  `RobotRaconteur.ConnectionError` is raised. Calls after connecting keep
+  their own 30 s request timeout.
 - IPv6 link-local addresses work with or without a zone. With a zone
   (`rr+tcp://[fe80::1%25eth0]:port/...`) it is used as given. Without one,
   `rr-connect` tries the address on every local interface that has a

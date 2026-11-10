@@ -9,11 +9,19 @@
 ;; every local interface with a link-local address, all at once, and keeps
 ;; the first connection. Racing matters: on a wrong interface the SYN goes
 ;; unanswered and the attempt only fails when the TCP connect times out.
+;;
+;; Every connect is also bounded by a timeout (default 5 s, like the core's
+;; TcpTransport default connect timeout). Racket's tcp-connect has none of its
+;; own, so an unreachable host would otherwise wait for the kernel to give up
+;; on the SYN: about 127 s with Linux defaults (tcp_syn_retries = 6).
 (require racket/tcp racket/list racket/string)
 
 (provide rr-tcp-connect
+         default-connect-timeout
          link-local-interfaces
          zoneless-link-local?)
+
+(define default-connect-timeout 5)
 
 ;; Interfaces with an IPv6 link-local address, except loopback:
 ;; list of (cons ifindex name). Linux (/proc/net/if_inet6); '() elsewhere.
@@ -34,20 +42,25 @@
   (and (regexp-match? #px"^(?i:fe[89ab][0-9a-f]):" host)
        (not (string-contains? host "%"))))
 
-;; Like tcp-connect, but a zoneless link-local host is tried on every
-;; link-local interface in parallel. Returns (values in out).
-(define (rr-tcp-connect host port)
+;; Like tcp-connect, but gives up after `timeout` seconds, and a zoneless
+;; link-local host is tried on every link-local interface in parallel.
+;; Returns (values in out); raises exn:fail:network.
+(define (rr-tcp-connect host port #:timeout [timeout default-connect-timeout])
   (cond
-    [(not (zoneless-link-local? host)) (tcp-connect host port)]
+    [(not (zoneless-link-local? host)) (race-connect host port '(#f) timeout)]
     [else
      (define zones (map cdr (link-local-interfaces)))
      (when (null? zones)
        (raise (exn:fail:network
                (format "rr-tcp-connect: no interface with an IPv6 link-local address to reach ~a" host)
                (current-continuation-marks))))
-     (race-connect host port zones)]))
+     (race-connect host port zones timeout)]))
 
-(define (race-connect host port zones)
+(define (net-error fmt . args)
+  (raise (exn:fail:network (apply format fmt args) (current-continuation-marks))))
+
+;; zones: interface names to append as "%zone", or '(#f) for the host as given
+(define (race-connect host port zones timeout)
   (define results (make-channel))
   ;; each attempt runs under its own custodian so a losing attempt, possibly
   ;; still waiting for its SYN to be answered, can be shut down
@@ -59,22 +72,31 @@
          (lambda ()
            (channel-put results
                         (with-handlers ([exn:fail? (lambda (e) (list 'fail z e))])
-                          (define-values (in out) (tcp-connect (string-append host "%" z) port))
+                          (define-values (in out)
+                            (tcp-connect (if z (string-append host "%" z) host) port))
                           (list 'ok z in out cust))))))
       cust))
+  (define deadline (+ (current-inexact-milliseconds) (* 1000 timeout)))
+  (define (shutdown-all!) (for ([c (in-list attempts)]) (custodian-shutdown-all c)))
   (let loop ([pending (length zones)] [errors '()])
     (cond
       [(zero? pending)
-       (raise (exn:fail:network
-               (format "rr-tcp-connect: could not connect to ~a port ~a on any interface:~a"
-                       host port
-                       (apply string-append
-                              (for/list ([e (in-list (reverse errors))])
-                                (format "\n  %~a: ~a" (car e) (exn-message (cdr e))))))
-               (current-continuation-marks)))]
+       (if (equal? zones '(#f))
+           (raise (cdar errors))
+           (net-error "rr-tcp-connect: could not connect to ~a port ~a on any interface:~a"
+                      host port
+                      (apply string-append
+                             (for/list ([e (in-list (reverse errors))])
+                               (format "\n  %~a: ~a" (car e) (exn-message (cdr e)))))))]
       [else
-       (define r (channel-get results))
-       (case (car r)
+       (define r (sync/timeout (max 0 (/ (- deadline (current-inexact-milliseconds)) 1000.0))
+                               results))
+       (case (and r (car r))
+         [(#f)
+          (shutdown-all!)
+          (net-error "rr-tcp-connect: connecting to ~a port ~a timed out after ~a s~a"
+                     host port timeout
+                     (if (equal? zones '(#f)) "" (format " (tried interfaces ~a)" zones)))]
          [(ok)
           (define winner (list-ref r 4))
           ;; closes the other attempts' sockets and ends their threads

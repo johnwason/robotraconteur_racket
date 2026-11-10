@@ -408,21 +408,59 @@
 ;; system trust store and checks the hostname.
 ;; #:tls-context is the node TLS context for rrs+tcp (rr-make-node-tls-context);
 ;; the default trusts the Robot Raconteur node roots.
+;; #:timeout bounds the whole connect (TCP, TLS, WebSocket upgrade and the
+;; Robot Raconteur handshake); the TCP connect alone gives up after
+;; default-connect-timeout (5 s) or the overall timeout, whichever is shorter.
+(define default-rr-connect-timeout 10)
+
 (define (rr-connect url #:username [username #f] #:credentials [credentials #f]
-                    #:ssl-context [ssl-context #f] #:tls-context [tls-context #f])
+                    #:ssl-context [ssl-context #f] #:tls-context [tls-context #f]
+                    #:timeout [timeout default-rr-connect-timeout])
+  (call-with-connect-deadline
+   url timeout
+   (lambda ()
+     (connect* url username credentials ssl-context tls-context
+               (min default-connect-timeout timeout)))))
+
+;; Runs thunk in a thread under a fresh custodian. If it hasn't finished within
+;; `timeout` seconds (or the caller is interrupted), the custodian is shut
+;; down: sockets, the TLS/WebSocket threads and any connection threads started
+;; so far are all closed. On success the connection keeps living under that
+;; custodian, which belongs to the caller's custodian.
+(define (call-with-connect-deadline url timeout thunk)
+  (define cust (make-custodian))
+  (define ch (make-channel))
+  (parameterize ([current-custodian cust])
+    (thread (lambda ()
+              (channel-put ch (with-handlers ([(lambda (e) #t) (lambda (e) (cons 'raise e))])
+                                (cons 'ok (thunk)))))))
+  (define r #f)
+  (dynamic-wind
+   void
+   (lambda () (set! r (sync/timeout timeout ch)))
+   (lambda () (unless (and r (eq? (car r) 'ok)) (custodian-shutdown-all cust))))
+  (cond
+    [(not r)
+     (raise-rr-error 1 "RobotRaconteur.ConnectionError"
+                     (format "connecting to ~a timed out after ~a s" url timeout))]
+    [(eq? (car r) 'raise) (raise (cdr r))]
+    [else (cdr r)]))
+
+(define (connect* url username credentials ssl-context tls-context tcp-timeout)
   (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
+  (define (tcp-connect* h p) (rr-tcp-connect h p #:timeout tcp-timeout))
   (define local-nodeid (random-bytes 16))
   (define-values (in out tls-nodeid)
     (case transport
-      [(tcp) (let-values ([(i o) (rr-tcp-connect host port)]) (values i o #f))]
-      [(ws) (let-values ([(i o) (ws-connect host port http-path #:connect rr-tcp-connect)])
+      [(tcp) (let-values ([(i o) (tcp-connect* host port)]) (values i o #f))]
+      [(ws) (let-values ([(i o) (ws-connect host port http-path #:connect tcp-connect*)])
               (values i o #f))]
       [(wss) (let-values ([(i o) (ws-connect host port http-path
                                              #:tls (or ssl-context (ssl-secure-client-context)))])
                (values i o #f))]
       [(rrs-tcp)
        (define ctx (or tls-context (get-default-node-tls-context)))
-       (define-values (raw-in raw-out) (rr-tcp-connect host port))
+       (define-values (raw-in raw-out) (tcp-connect* host port))
        (with-handlers ([(lambda (e) #t)
                         (lambda (e) (close-output-port raw-out) (close-input-port raw-in) (raise e))])
          (start-tls raw-in raw-out local-nodeid nodeid nodename ctx))]))
