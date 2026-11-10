@@ -15,6 +15,61 @@ Version 2. It reads the service definitions from the service at connect
 time, so you don't need generated code. It can also find nodes and services
 on the local network.
 
+## Quick Start
+
+The Quick Start connects to a device from Racket and calls its functions. The
+device is "Reynard the Robot", a simple cartoon robot from a Python package
+that runs a standard Robot Raconteur service.
+
+Install Racket (from [racket-lang.org](https://download.racket-lang.org) or
+your package manager), this library, and Reynard:
+
+```bash
+raco pkg install "git+https://github.com/johnwason/robotraconteur_racket?path=robotraconteur"
+python -m pip install reynard-the-robot
+```
+
+On Linux, use `python3` instead of `python`.
+
+Start Reynard, and open a browser to [http://localhost:29201](http://localhost:29201)
+to see it:
+
+```bash
+python -m reynard_the_robot
+```
+
+The Racket client only needs to connect: it reads the service definition
+from the service, so there is nothing to generate or declare.
+
+[`examples/quickstart/reynard-quickstart-client.rkt`](examples/quickstart/reynard-quickstart-client.rkt)
+
+```racket
+#lang racket/base
+(require robotraconteur)
+
+;; Connect to the service
+(define obj (rr-connect "rr+tcp://localhost:29200?service=reynard"))
+
+;; Call the say function
+(rr-call obj "say" "Hello from Racket!")
+
+;; Call the teleport function (meters)
+(rr-call obj "teleport" 0.1 -0.2)
+
+(rr-close obj)
+```
+
+Run it, and Reynard says hello and jumps to the new position:
+
+```bash
+racket examples/quickstart/reynard-quickstart-client.rkt
+```
+
+Properties work the same way with `rr-get` and `rr-set!`; see [Usage](#usage)
+for the rest of the API, [examples/reynard.rkt](examples/reynard.rkt) for a
+fuller Reynard client, and [Discovery examples](#discovery-examples) to find
+Reynard on the network instead of naming its address.
+
 ## Installation
 
 The package is the `robotraconteur/` directory of this repository:
@@ -53,9 +108,13 @@ open it with `raco docs robotraconteur`. Its source is
 | `test/servicetest/`          | Ports of the Robot Raconteur `ServiceTestClient*.py` tests, the test vector reader and the C++ test server harness |
 | `test/data/test_vectors.bin` | Copy of the Robot Raconteur test vector blob (`TEST_VECTORS_FORMAT.md`) |
 | `build_cpp_test_server.sh`   | Builds the Robot Raconteur C++ test server inside the container |
+| `examples/quickstart/`       | The Quick Start client (Reynard the Robot) |
 | `examples/simple.rkt`        | Short usage example |
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
+| `examples/standard_devices/`  | Ports of the core's standard device examples (robot and camera clients) |
+| `examples/features/discovery/` | Ports of the core's discovery examples (find Reynard by type, node name or node ID) |
 | `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
+| `test/loopback_camera.py`    | Loopback camera with synthetic frames (standard `com.robotraconteur.imaging.Camera`) |
 
 ## Usage
 
@@ -120,6 +179,57 @@ Remote errors are raised as `exn:fail:robotraconteur`, with the fields
 service-defined exception name), `error-message`, `error-subname` and
 `error-param`. `(rr-error-type e)` gives the code as a symbol, such as
 `'ObjectLockedError`.
+
+## Standard device examples
+
+`examples/standard_devices/` ports the core repository's
+`examples/standard_devices` Python clients. Like the originals, they default to
+the [training simulator](https://github.com/robotraconteur-contrib/robotraconteur_training_sim)
+on `localhost`; pass another URL as the last argument, quoted because of the `?`:
+
+| Example | Does |
+|---|---|
+| `robot/robot-jog-freespace.rkt` | Jog mode: moves joint 0 in a slow sine wave with `jog_freespace` |
+| `robot/robot-position-command.rkt` | Position-command mode: streams `RobotJointCommand`s on the `position_command` wire |
+| `robot/robot-trajectory.rkt abb\|ur` | Trajectory mode: runs `execute_trajectory`, then two queued trajectories |
+| `camera/camera-capture-frame.rkt` | Captures one raw frame |
+| `camera/camera-capture-frame-compressed.rkt` | Captures one compressed frame (JPEG or PNG) |
+| `camera/camera-image.rkt` | Live full-quality stream (`frame_stream` pipe) |
+| `camera/camera-image-preview.rkt` | Live preview stream (`preview_stream` pipe, MJPEG) |
+
+```sh
+racket examples/standard_devices/robot/robot-trajectory.rkt ur 'rr+tcp://192.168.1.231:52511?service=robot'
+racket examples/standard_devices/camera/camera-image-preview.rkt --show 'rr+tcp://192.168.1.231:59823?service=camera'
+```
+
+The jog and position examples run until interrupted, or for `--duration`
+seconds. The camera examples save PNG files by default (`--output` names the
+file); `--show` displays the images in a window instead (`racket/gui`, needs a
+display). `camera/camera-util.rkt` converts standard `Image` and
+`CompressedImage` structures to `racket/draw` bitmaps (raw `rgb888`, `bgr888`,
+`rgba8888`, `bgra8888` and `mono8`), in place of `ImageUtil` from the Python
+companion library.
+
+All seven were run against the training simulator's 2ur5e scene: the robots
+move as in the Python versions and the frames match the camera's own JPEG.
+
+## Discovery examples
+
+`examples/features/discovery/` ports the core repository's Reynard discovery
+examples. Each finds Reynard the Robot on the local network, connects
+through the discovered URL and calls `say`:
+
+```sh
+racket examples/features/discovery/find-service-by-type.rkt   # by root object type
+racket examples/features/discovery/find-node-by-name.rkt      # by node name
+racket examples/features/discovery/find-node-by-id.rkt '{758dfe16-...}'  # by node ID
+```
+
+The type, node name and service name can be passed as arguments.
+`find-node-by-name.rkt` prints the node ID that `find-node-by-id.rkt` needs.
+Discovery is IPv6 link-local multicast and Linux only; unlike the Python
+versions there is no need to wait a few seconds first, since each call sends
+discovery requests and listens for 3 seconds.
 
 ## Tests
 
@@ -201,6 +311,16 @@ It then runs interop tests against real services:
   (a generator of `TrajectoryStatus`), and with the streaming
   `position_command` wire. It checks each move against the reported joint
   position.
+- **The discovery examples** (`test/test-discovery-examples.rkt`), in the
+  discovery stage: Reynard runs as a node on the tap interfaces and each
+  example finds it and calls `say`.
+- **The standard device examples** (`test/test-device-examples.rkt`), run as
+  programs against a loopback robot and a loopback camera
+  (`test/loopback_camera.py`). The camera serves 96x48 frames that are red,
+  green and blue in thirds, which catches swapped colour channels. The test
+  checks the robot's motion, the trajectory status sequence, the saved
+  frames' size and colours, every supported raw encoding, and the `--show`
+  window path on a virtual display (Xvfb).
 
 ### ServiceTest ports against the C++ test server
 

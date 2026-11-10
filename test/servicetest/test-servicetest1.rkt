@@ -334,8 +334,17 @@
      (check-allclose (rr-pipe-receive e2 #:timeout 1) (vector 72.34))
      (check-allclose (mydat (rr-pipe-receive e3)) (vector 738.29))
      (check-allclose (mydat (rr-pipe-receive e3 #:timeout 1)) (vector 89.83))
-     ;; e1 requested acks; the first packet must be acknowledged
-     (check-equal? (sync/timeout 2 acked) first-pnum)
+     ;; e1 requested acks; the first packet must be acknowledged. Acks can
+     ;; arrive in any order (the service may acknowledge several packets in
+     ;; one message), so wait up to 2 s for that packet's among them.
+     (define deadline (+ (current-inexact-milliseconds) 2000))
+     (check-true (let loop ()
+                   (define n (sync/timeout (max 0 (/ (- deadline (current-inexact-milliseconds)) 1000.0))
+                                           acked))
+                   (cond [(not n) #f]
+                         [(= n first-pnum) #t]
+                         [else (loop)]))
+                 "first packet was not acknowledged")
      (sleep 0.5)
      (rr-call r "pipe_check_error")
      (check-eq? (rr-member-direction r "p1") 'both)

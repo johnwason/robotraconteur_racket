@@ -45,7 +45,8 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   fi
   raco make test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
-            test/test-timeouts.rkt \
+            test/test-timeouts.rkt test/test-device-examples.rkt test/test-discovery-examples.rkt \
+            test/test-quickstart.rkt \
             test/servicetest/*.rkt
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
@@ -147,6 +148,16 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
       RR_HUNG_LOG=/tmp/hung_server.log RR_CLOSED_PORT=22261 \
       raco test test/test-timeouts.rkt || status=1
     kill $hung_pid 2>/dev/null || true
+    # discovery examples: Reynard the Robot as a node on the taps
+    python3 -m reynard_the_robot --quiet > /tmp/reynard_disc.log 2>&1 &
+    reynard_pid=$!
+    for i in $(seq 1 150); do
+      python3 -c "import socket; socket.create_connection((\"127.0.0.1\", 29200), 1)" 2>/dev/null && break
+      sleep 0.2
+    done
+    raco test test/test-discovery-examples.rkt || status=1
+    kill $reynard_pid 2>/dev/null || true
+    wait $reynard_pid 2>/dev/null || true
     kill $disc1 $disc2 $tap_pids 2>/dev/null || true
   else
     echo "SKIPPED: cannot create a tap interface (needs /dev/net/tun and NET_ADMIN)"
@@ -169,9 +180,22 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
     echo "==== interop: $name ===="
     raco test $test || status=1
     kill $pid 2>/dev/null || true
+    # let it exit and free its ports before the next service starts
+    wait $pid 2>/dev/null || true
   }
-  run_interop reynard 29200 test/test-reynard.rkt python3 -m reynard_the_robot --quiet
+  # Reynard: the interop tests and the README quick start client
+  run_interop reynard 29200 "test/test-reynard.rkt test/test-quickstart.rkt" python3 -m reynard_the_robot --quiet
   run_interop loopback-robot 59926 test/test-robot.rkt python3 test/loopback_robot.py 59926
+
+  # standard device examples (examples/standard_devices) run as programs
+  # against a fresh loopback robot and a loopback camera
+  python3 test/loopback_camera.py 59830 > /tmp/loopback_camera.log 2>&1 &
+  camera_pid=$!
+  wait_ready /tmp/loopback_camera.log || status=1
+  export RR_EX_ROBOT_URL="rr+tcp://127.0.0.1:59927?service=robot"
+  export RR_EX_CAMERA_URL="rr+tcp://127.0.0.1:59830?service=camera"
+  run_interop device-examples 59927 test/test-device-examples.rkt python3 test/loopback_robot.py 59927
+  kill $camera_pid 2>/dev/null || true
 
   # ServiceTest ports against the in-process C++ test server
   echo "==== servicetest: C++ test server ===="
