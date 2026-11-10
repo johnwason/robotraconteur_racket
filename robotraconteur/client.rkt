@@ -1,12 +1,13 @@
 #lang racket/base
 ;; Robot Raconteur client over the rr+tcp and rr+ws transports using Message Version 2.
 
-(require racket/tcp racket/string openssl racket/list racket/match racket/async-channel
+(require racket/tcp racket/string openssl "tls.rkt" racket/list racket/match racket/async-channel
          net/url net/uri-codec
          "message.rkt" "robdef.rkt" "pack.rkt" "websocket.rkt")
 
 (provide rr-connect
          rr-make-ssl-context
+         rr-make-node-tls-context
          rr-close
          rr-object?
          rr-object-path
@@ -287,8 +288,10 @@
 ;;   rr+ws://host:port/[path]?service=name   (WebSocket, same port as rr+tcp)
 ;;   rr+wss://host[:port]/[path]?service=name (WebSocket over standard TLS,
 ;;                                             default port 443)
+;;   rrs+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
+;;                                            (Robot Raconteur node TLS)
 ;; Returns (values transport host port http-path service nodename nodeid)
-;; where transport is 'tcp, 'ws or 'wss.
+;; where transport is 'tcp, 'ws, 'wss or 'rrs-tcp.
 
 (define (parse-rr-url s)
   (define u (string->url s))
@@ -297,7 +300,9 @@
       [("rr+tcp" "tcp") 'tcp]
       [("rr+ws") 'ws]
       [("rr+wss") 'wss]
-      [else (error 'rr-connect "unsupported URL scheme (expected rr+tcp, rr+ws or rr+wss): ~a" s)]))
+      [("rrs+tcp") 'rrs-tcp]
+      [else (error 'rr-connect
+                   "unsupported URL scheme (expected rr+tcp, rrs+tcp, rr+ws or rr+wss): ~a" s)]))
   (define q (url-query u))
   (define service (cond [(assq 'service q) => cdr]
                         [else (error 'rr-connect "URL missing service: ~a" s)]))
@@ -318,15 +323,19 @@
   (apply bytes (for/list ([i (in-range 16)])
                  (string->number (substring hex (* 2 i) (+ 2 (* 2 i))) 16))))
 
+;; "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}", lowercase, as NodeID::ToString
+(define (nodeid->string b)
+  (define hex (apply string-append
+                     (for/list ([x (in-bytes b)])
+                       (string-append (if (< x 16) "0" "") (number->string x 16)))))
+  (format "{~a-~a-~a-~a-~a}" (substring hex 0 8) (substring hex 8 12) (substring hex 12 16)
+          (substring hex 16 20) (substring hex 20 32)))
+
 ;; ---------------------------------------------------------------------------
 ;; Connect
 
 (define (random-bytes n) (apply bytes (for/list ([i n]) (random 256))))
 (define (random-u32) (+ 1 (random 4294967087)))
-
-;; #:ssl-context is the OpenSSL client context for rr+wss. The default,
-;; ssl-secure-client-context, verifies the certificate chain against the
-;; system trust store and checks the hostname.
 
 ;; A verifying client context for rr+wss that also trusts the given PEM
 ;; certificate files (e.g. a private CA or a self-signed proxy certificate).
@@ -340,16 +349,74 @@
   (ssl-set-verify-hostname! ctx #t)
   (ssl-seal-context! ctx)
   ctx)
-(define (rr-connect url #:username [username #f] #:credentials [credentials #f]
-                    #:ssl-context [ssl-context #f])
-  (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
+
+;; Default rrs+tcp context: trusts the two Robot Raconteur node roots
+(define default-node-tls-context #f)
+(define (get-default-node-tls-context)
+  (unless default-node-tls-context
+    (set! default-node-tls-context (rr-make-node-tls-context)))
+  default-node-tls-context)
+
+(define (stream-op-error en what)
+  (define els (entry-elements en))
+  (define (s nm) (let ([e (find-elem* els nm)]) (if e (elem-data e) "")))
+  (define name (s "errorname"))
+  (raise-rr-error (entry-error en)
+                  (if (equal? name "") "RobotRaconteur.ConnectionError" name)
+                  (format "~a: ~a" what (s "errorstring"))))
+
+;; rrs+tcp: ask the server to start TLS (StreamOp "STARTTLS", sent before
+;; CreateConnection), work out which node answered, then run the TLS handshake
+;; on the same connection and check that the certificate belongs to that node.
+;; Returns (values in out remote-nodeid).
+(define (start-tls raw-in raw-out local-nodeid nodeid nodename tls-context)
+  (define req (message local-nodeid (or nodeid (make-bytes 16 0)) 0 0 "" nodename "" 0 0
+                       (list (entry 'StreamOp "" "STARTTLS" 0 0 "" '()))))
+  (write-bytes (message->bytes req) raw-out)
+  (flush-output raw-out)
+  (define ret (read-message raw-in))
+  (when (eof-object? ret)
+    (raise-rr-error 1 "RobotRaconteur.ConnectionError"
+                    "connection closed by server during STARTTLS (does it support TLS?)"))
+  (define ren (car (message-entries ret)))
+  (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "STARTTLS"))
+    (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected STARTTLS response"))
+  (unless (zero? (entry-error ren)) (stream-op-error ren "STARTTLS refused"))
+  ;; the node the server says it is must be the node the URL asked for
+  (define sender (message-sender-nodeid ret))
+  (unless (cond [nodeid (equal? sender nodeid)]
+                [(not (equal? nodename "")) (equal? (message-sender-nodename ret) nodename)]
+                [else #t])
+    (raise-rr-error 1 "RobotRaconteur.ConnectionError"
+                    "STARTTLS response came from a different node than requested"))
   (define-values (in out)
+    (tls-connect-ports tls-context raw-in raw-out
+                       (string-append "/CN=Robot Raconteur Node " (nodeid->string sender))))
+  (values in out sender))
+
+;; #:ssl-context is the OpenSSL client context for rr+wss. The default,
+;; ssl-secure-client-context, verifies the certificate chain against the
+;; system trust store and checks the hostname.
+;; #:tls-context is the node TLS context for rrs+tcp (rr-make-node-tls-context);
+;; the default trusts the Robot Raconteur node roots.
+(define (rr-connect url #:username [username #f] #:credentials [credentials #f]
+                    #:ssl-context [ssl-context #f] #:tls-context [tls-context #f])
+  (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
+  (define local-nodeid (random-bytes 16))
+  (define-values (in out tls-nodeid)
     (case transport
-      [(tcp) (tcp-connect host port)]
-      [(ws) (ws-connect host port http-path)]
-      [(wss) (ws-connect host port http-path
-                         #:tls (or ssl-context (ssl-secure-client-context)))]))
-  (define c (conn in out (make-semaphore 1) (random-bytes 16) nodeid nodename
+      [(tcp) (let-values ([(i o) (tcp-connect host port)]) (values i o #f))]
+      [(ws) (let-values ([(i o) (ws-connect host port http-path)]) (values i o #f))]
+      [(wss) (let-values ([(i o) (ws-connect host port http-path
+                                             #:tls (or ssl-context (ssl-secure-client-context)))])
+               (values i o #f))]
+      [(rrs-tcp)
+       (define ctx (or tls-context (get-default-node-tls-context)))
+       (define-values (raw-in raw-out) (tcp-connect host port))
+       (with-handlers ([(lambda (e) #t)
+                        (lambda (e) (close-output-port raw-out) (close-input-port raw-in) (raise e))])
+         (start-tls raw-in raw-out local-nodeid nodeid nodename ctx))]))
+  (define c (conn in out (make-semaphore 1) local-nodeid nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
                   (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
@@ -367,6 +434,10 @@
     (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
       (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected handshake response"))
     (unless (memv (entry-error ren) '(0 2)) (raise (entry->exn c ren)))
+    ;; over TLS, the connection must be with the node whose certificate was checked
+    (when (and tls-nodeid (not (equal? (message-sender-nodeid ret) tls-nodeid)))
+      (raise-rr-error 1 "RobotRaconteur.ConnectionError"
+                      "node answering CreateConnection differs from the TLS certificate's node"))
     (set-conn-remote-nodeid! c (message-sender-nodeid ret))
     (set-conn-remote-nodename! c (message-sender-nodename ret))
     ;; start background threads
