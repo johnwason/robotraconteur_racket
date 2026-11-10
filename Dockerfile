@@ -20,3 +20,11 @@ RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed numpy
     && pip3 install --no-cache-dir --break-system-packages \
         reynard-the-robot robotraconteur-abstract-robot robotraconteurcompanion \
         general-robotics-toolbox scipy pyyaml
+
+# Toolchain for building the Robot Raconteur C++ test server
+# (robotraconteur_test_server / robotraconteur_test_server_lib) from a
+# read-only checkout. See build_cpp_test_server.sh.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake g++ make libboost-all-dev libssl-dev libusb-1.0-0-dev \
+        libdbus-1-dev libbluetooth-dev zlib1g-dev libgtest-dev \
+    && rm -rf /var/lib/apt/lists/*
