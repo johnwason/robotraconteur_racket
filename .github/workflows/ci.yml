@@ -52,7 +52,7 @@ jobs:
           key: ${{ steps.cpp-cache.outputs.cache-primary-key }}
 
       - name: Run tests
-        run: RR_SRC="$GITHUB_WORKSPACE/rr-src" RR_REQUIRE_CPP_SERVER=1 ./run_tests.sh
+        run: RR_SRC="$GITHUB_WORKSPACE/rr-src" RR_REQUIRE_CPP_SERVER=1 RR_REQUIRE_DISCOVERY=1 ./run_tests.sh
 
   online:
     # rr+wss against the public test server (wstest2.wasontech.com). An

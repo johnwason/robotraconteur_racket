@@ -28,3 +28,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake g++ make libboost-all-dev libssl-dev libusb-1.0-0-dev \
         libdbus-1-dev libbluetooth-dev zlib1g-dev libgtest-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# iproute2: discovery tests create a tap interface inside the container's own
+# network namespace (podman --network none --cap-add NET_ADMIN --device
+# /dev/net/tun) so IPv6 link-local multicast works without touching any
+# real network.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/*

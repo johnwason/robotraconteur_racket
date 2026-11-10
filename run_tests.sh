@@ -13,6 +13,12 @@
 # present, to check that test/data/test_vectors.bin matches the checkout.
 # RR_REQUIRE_CPP_SERVER=1 fails the run instead of skipping the ServiceTest
 # stage when the C++ test server has not been built (used by CI).
+#
+# Discovery tests need a multicast-capable interface. When /dev/net/tun is
+# available the container gets NET_ADMIN and the tun device, and creates a
+# tap interface inside its own network namespace (still --network none:
+# nothing reaches a real network). Otherwise that stage is skipped, or fails
+# with RR_REQUIRE_DISCOVERY=1.
 set -e
 cd "$(dirname "$0")"
 IMAGE=rr-racket-dev
@@ -20,11 +26,14 @@ RR_SRC=${RR_SRC:-$HOME/RobotRaconteur2/robotraconteur}
 podman image exists "$IMAGE" || podman build -t "$IMAGE" .
 SRC_MOUNT=""
 [ -d "$RR_SRC/test/data" ] && SRC_MOUNT="-v $RR_SRC:/src:ro,Z"
-exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT \
-  -e RR_REQUIRE_CPP_SERVER="${RR_REQUIRE_CPP_SERVER:-0}" "$IMAGE" sh -c '
+TAP_OPTS=""
+[ -c /dev/net/tun ] && TAP_OPTS="--cap-add NET_ADMIN --device /dev/net/tun"
+exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
+  -e RR_REQUIRE_CPP_SERVER="${RR_REQUIRE_CPP_SERVER:-0}" \
+  -e RR_REQUIRE_DISCOVERY="${RR_REQUIRE_DISCOVERY:-0}" "$IMAGE" sh -c '
   set -e
   raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
-            test/test-wss.rkt test/test-rrs.rkt test/servicetest/*.rkt
+            test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/servicetest/*.rkt
   status=0
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
@@ -89,6 +98,29 @@ exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT \
     RR_RRS_NOOID="22227 $ID_NOOID" RR_RRS_EXTRAEXT="22228 $ID_EXTRAEXT" \
     raco test test/test-rrs.rkt || status=1
   kill $rrs_pids 2>/dev/null || true
+
+  # discovery: a tap interface in this namespace stands in for a LAN; two
+  # test services (two nodes) announce on it
+  echo "==== discovery: IPv6 link-local multicast (tap rrtest0) ===="
+  if ip tuntap add dev rrtest0 mode tap 2>/dev/null && ip link set rrtest0 up; then
+    python3 test/tap_sink.py rrtest0 > /tmp/tap_sink.log 2>&1 &
+    tap_pid=$!
+    for i in $(seq 1 50); do
+      ip -6 addr show dev rrtest0 | grep -q "fe80.*scope link" &&
+        ! ip -6 addr show dev rrtest0 | grep -q tentative && break
+      sleep 0.2
+    done
+    python3 test/test_service.py 22240 > /tmp/service_disc1.log 2>&1 &
+    disc1=$!
+    RR_TEST_NODENAME=experimental.racket_test2 python3 test/test_service.py 22241 > /tmp/service_disc2.log 2>&1 &
+    disc2=$!
+    wait_ready /tmp/service_disc1.log && wait_ready /tmp/service_disc2.log || status=1
+    RR_DISCOVERY_PORTS="22240 22241" raco test test/test-discovery.rkt || status=1
+    kill $disc1 $disc2 $tap_pid 2>/dev/null || true
+  else
+    echo "SKIPPED: cannot create a tap interface (needs /dev/net/tun and NET_ADMIN)"
+    if [ "$RR_REQUIRE_DISCOVERY" = 1 ]; then status=1; fi
+  fi
 
   # start a service, wait until its TCP port accepts connections, run a test file
   run_interop() {

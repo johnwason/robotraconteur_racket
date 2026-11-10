@@ -19,6 +19,7 @@ generated code.
 | `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws` and `rr+wss`) |
 | `robotraconteur/tls.rkt`     | Node TLS for `rrs+tcp`: libssl via the FFI, with the core's certificate rules |
 | `robotraconteur/rootca.rkt`  | The two Robot Raconteur node root certificates (2015 and 2020) |
+| `robotraconteur/discovery.rkt` | Node and service discovery (IPv6 link-local multicast, libc sockets via the FFI) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
@@ -65,6 +66,7 @@ Other operations:
 | Wires | `rr-wire-in-value` (raises `ValueNotSet` if no value has arrived or it has expired), `rr-wire-wait-in-value`, `rr-wire-try-in-value`, `rr-wire-set-in-value-lifespan!`, `rr-wire-set-out-value!`, `rr-wire-try-out-value`, `rr-wire-add-listener!` |
 | Pipes | `rr-pipe-connect` (optional endpoint index), `rr-pipe-set-request-ack!`, `rr-pipe-add-listener!`, `rr-pipe-add-ack-listener!`, `rr-pipe-try-receive` |
 | Locks | `rr-request-object-lock` (`'user` or `'client`), `rr-release-object-lock`, `rr-monitor-enter` / `rr-monitor-exit`, `call-with-rr-monitor-lock` |
+| Discovery | `rr-find-nodes`, `rr-find-node-by-name`, `rr-find-node-by-id` (return `rr-node-info`), `rr-find-service-by-type` (returns `rr-service-info` with connection URLs); all take `#:timeout` in seconds |
 
 Event, wire and pipe listeners run in order on a single dispatch thread per
 connection. A listener must not block: hand work to another thread or use an
@@ -126,6 +128,20 @@ verification rules against one server per case:
 connects over `rr+wss` to the public test service at `wstest2.wasontech.com`,
 the same check as the core's `test/extra/tcp_tls/test_ws_https.py`.
 
+Discovery is tested inside the same container. With `/dev/net/tun`
+available, the container gets `NET_ADMIN` and creates a tap interface in its
+own network namespace; `test/tap_sink.py` holds it open so it gets an IPv6
+link-local address. Two test services, running as separate nodes, announce
+on it. `test/test-discovery.rkt` then:
+
+- finds both nodes, with link-local URLs scoped to the tap (`%25rrtest0`);
+- finds nodes by name and by id;
+- finds services by type and connects through the discovered URLs.
+
+The container still uses `--network none`, so no packet reaches a real
+network. Without `/dev/net/tun` the stage is skipped (`RR_REQUIRE_DISCOVERY=1`
+makes that a failure).
+
 It then runs interop tests against real services:
 
 - **[Reynard the Robot](https://github.com/robotraconteur/reynard-the-robot)**
@@ -167,7 +183,21 @@ tests, the Python async API tests, and numpy helpers.
 ## Limitations
 
 - Client only. Only `rr+tcp`, `rrs+tcp`, `rr+ws` and `rr+wss`: no local or
-  intra transports, and no node discovery.
+  intra transports.
+- Discovery works like the core's default: IPv6 link-local multicast on
+  `FF02::BA86`, UDP port 48653. The client sends request packets and collects
+  node announcements, then lists services through each node's
+  `RobotRaconteurServiceIndex`. Limits:
+  - Linux only. Interfaces come from `/proc/net/if_inet6`, and the socket is
+    made through libc via the FFI, because `racket/udp` can only join IPv4
+    multicast groups.
+  - No IPv4 broadcast discovery (off by default in the core too).
+  - No discovery through other transports.
+  - No subscriptions or continuous background listening: each call listens
+    for `#:timeout` seconds.
+  - Binding port 48653 uses `SO_REUSEPORT`. On Linux that only shares the
+    port with sockets of the same user, so it can fail if a node run by
+    another user already holds it.
 - `rrs+tcp` follows the C++ core:
   - the client sends `STARTTLS` before `CreateConnection`, then runs TLS on
     the same connection;
@@ -202,8 +232,9 @@ tests, the Python async API tests, and numpy helpers.
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. The
 `test` job builds the dev image, builds the C++ test server from
 `johnwason/robotraconteur` (the pinned `test-vectors-blob` commit, cached
-between runs), and runs `run_tests.sh` with `RR_REQUIRE_CPP_SERVER=1`, so the
-ServiceTest stage can't be skipped silently. The `online` job runs
+between runs), and runs `run_tests.sh` with `RR_REQUIRE_CPP_SERVER=1` and
+`RR_REQUIRE_DISCOVERY=1`, so neither the ServiceTest stage nor the discovery
+stage can be skipped silently. The `online` job runs
 `run_online_tests.sh` against `wstest2.wasontech.com`; its failures don't fail
 the workflow.
 
