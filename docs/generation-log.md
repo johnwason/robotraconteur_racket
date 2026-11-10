@@ -20,7 +20,7 @@ stated during the work, not a full record of the model's internal process.
 
 | | |
 |---|---|
-| Time | about 3 hours of agent working time; the user's input was 64 short prompts (see the statistics below) |
+| Time | about 2¾ hours of agent working time; the user's input was 53 short prompts (see the statistics below) |
 | First working client | about 11 minutes after the first prompt (the first passing test run), committed about 3 minutes later as `06e21ca` |
 | Result | 3,245 lines of Racket in the library (`robotraconteur/`), 2,302 lines of Racket tests plus 604 lines of Python test services, a Scribble manual, examples, CI |
 | Transports | `rr+tcp`, `rr+ws`, `rr+wss`, `rrs+tcp` (Robot Raconteur node TLS), plus IPv6 discovery |
@@ -93,46 +93,46 @@ implementations.
 ## Session statistics
 
 Counted from the session transcript and the repository. The interaction
-figures are a snapshot of the whole session taken when this revision of the
-log was written, so they include writing and revising the log; the
-repository figures are for `main` after pull request #3.
+figures cover the session up to the prompt asking for this log, so writing
+and revising the log is not included. The repository figures are for `main`
+after pull request #3.
 
 **Interaction**
 
 | | |
 |---|---|
-| User prompts | 64, including this log's requests and review feedback; 2 interrupted the work in progress |
-| User input | 822 words typed: a median of 11 words per prompt, and half the prompts were 10 words or fewer. A further 702 words were pasted, mostly review feedback on this log |
-| Model responses | 537 |
-| Agent working time | about 2 hours 55 minutes: from each prompt to the agent's last action before the next prompt, summed over all prompts |
-| User attention | not measured, and not the same as the agent's time. The user reports doing other work in parallel during the session. The time between the agent finishing and the next prompt was under 2 minutes for 43 of 63 turns (median about 1 minute), but that shows when prompts were sent, not how much attention they took |
+| User prompts | 53; 2 interrupted the work in progress |
+| User input | 691 words typed: a median of 11 words per prompt, and 26 of the 53 prompts were 10 words or fewer. The only pasted text was 13 words (the package site's challenge expression) |
+| Model responses | 491 |
+| Agent working time | about 2 hours 45 minutes: from each prompt to the agent's last action before the next prompt, summed over all prompts |
+| User attention | not measured, and not the same as the agent's time. The user reports doing other work in parallel during the session. The time between the agent finishing and the next prompt was under 2 minutes for 39 of 52 turns (median about 1 minute), but that shows when prompts were sent, not how much attention they took |
 | Timing of the early commits | phases 1 to 4 took the first hour of the session; their 19 commits fall within 40 minutes. Git shows them in the machine's local time zone (UTC−5). The history was not rewritten: author and committer dates match, and the transcript has no rebase, reset or amend. After phase 4 the session was idle for about five hours until the next prompt, which the agent working time leaves out |
 | Questions the model asked the user | one through the question tool; confirmations were also given in text before the ServiceTest work, as requested |
 
-**Tool calls: 535**
+**Tool calls: 498**
 
 | Tool | Calls | Used for |
 |---|---|---|
-| Bash | 453 | builds, tests, git, podman, editing files with scripts |
-| Write | 56 | new files |
-| Edit | 8 | small in-place changes |
-| Read | 7 | reading files and images (camera frames) |
+| Bash | 420 | builds, tests, git, podman, editing files with scripts |
+| Write | 55 | new files |
+| Edit | 6 | small in-place changes |
+| Read | 6 | reading files and images (camera frames) |
 | TaskStop | 4 | stopping hung or stale background runs |
 | ToolSearch | 3 | loading tools |
 | WebFetch | 2 | checking the package page |
 | WebSearch | 1 | looking for an existing loopback robot driver (phase 3) |
 | AskUserQuestion | 1 | a question when the user planned to switch computers |
 
-Within the shell calls: 124 `podman run` invocations, 9 image builds, 31 runs
-of the full test script, 43 targeted `raco test` runs, and 36 `git commit`
+Within the shell calls: 122 `podman run` invocations, 8 image builds, 30 runs
+of the full test script, 41 targeted `raco test` runs, and 30 `git commit`
 commands.
 
 **Tokens**
 
 | | |
 |---|---|
-| Output | about 585,000 |
-| Input | about 181.2 million, almost all cache reads (180.1 million), plus 1.1 million cache writes and about 1,200 uncached |
+| Output | about 538,000 |
+| Input | about 153.3 million, almost all cache reads (152.3 million), plus 1.0 million cache writes and about 1,100 uncached |
 
 The input is large because every response re-reads the whole conversation,
 including long tool outputs; caching keeps most of that cheap.
