@@ -290,10 +290,18 @@
 ;;                                             default port 443)
 ;;   rrs+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
 ;;                                            (Robot Raconteur node TLS)
+;; IPv6 hosts go in brackets, with an optional zone: [fe80::1%25eth0]
 ;; Returns (values transport host port http-path service nodename nodeid)
 ;; where transport is 'tcp, 'ws, 'wss or 'rrs-tcp.
 
-(define (parse-rr-url s)
+(define (parse-rr-url s0)
+  ;; IPv6 zone (RFC 6874: [fe80::1%25eth0]); net/url can't parse it, so it is
+  ;; split off here and re-attached to the host for tcp-connect
+  (define-values (s zone)
+    (cond
+      [(regexp-match #px"^([^:]+://\\[[^]%]*)%(?:25)?([^]]+)(\\].*)$" s0)
+       => (lambda (m) (values (string-append (cadr m) (cadddr m)) (caddr m)))]
+      [else (values s0 #f)]))
   (define u (string->url s))
   (define transport
     (case (url-scheme u)
@@ -314,7 +322,8 @@
            => (lambda (m) (let ([p (cadr m)]) (if (string-prefix? p "/") p (string-append "/" p))))]
           [else "/"]))
   (define default-port (if (eq? transport 'wss) 443 48653))
-  (values transport (url-host u) (or (url-port u) default-port) http-path service nodename nodeid))
+  (define host (if zone (string-append (url-host u) "%" zone) (url-host u)))
+  (values transport host (or (url-port u) default-port) http-path service nodename nodeid))
 
 (define (parse-nodeid s)
   (define hex (regexp-replace* #px"[{}-]" s ""))
