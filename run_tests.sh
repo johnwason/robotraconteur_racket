@@ -45,7 +45,7 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   fi
   raco make test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
-            test/test-timeouts.rkt test/test-device-examples.rkt \
+            test/test-timeouts.rkt test/test-device-examples.rkt test/test-discovery-examples.rkt \
             test/servicetest/*.rkt
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
@@ -147,6 +147,16 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
       RR_HUNG_LOG=/tmp/hung_server.log RR_CLOSED_PORT=22261 \
       raco test test/test-timeouts.rkt || status=1
     kill $hung_pid 2>/dev/null || true
+    # discovery examples: Reynard the Robot as a node on the taps
+    python3 -m reynard_the_robot --quiet > /tmp/reynard_disc.log 2>&1 &
+    reynard_pid=$!
+    for i in $(seq 1 150); do
+      python3 -c "import socket; socket.create_connection((\"127.0.0.1\", 29200), 1)" 2>/dev/null && break
+      sleep 0.2
+    done
+    raco test test/test-discovery-examples.rkt || status=1
+    kill $reynard_pid 2>/dev/null || true
+    wait $reynard_pid 2>/dev/null || true
     kill $disc1 $disc2 $tap_pids 2>/dev/null || true
   else
     echo "SKIPPED: cannot create a tap interface (needs /dev/net/tun and NET_ADMIN)"

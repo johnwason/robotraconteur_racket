@@ -56,6 +56,7 @@ open it with `raco docs robotraconteur`. Its source is
 | `examples/simple.rkt`        | Short usage example |
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
 | `examples/standard_devices/`  | Ports of the core's standard device examples (robot and camera clients) |
+| `examples/features/discovery/` | Ports of the core's discovery examples (find Reynard by type, node name or node ID) |
 | `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
 | `test/loopback_camera.py`    | Loopback camera with synthetic frames (standard `com.robotraconteur.imaging.Camera`) |
 
@@ -156,6 +157,24 @@ companion library.
 All seven were run against the training simulator's 2ur5e scene: the robots
 move as in the Python versions and the frames match the camera's own JPEG.
 
+## Discovery examples
+
+`examples/features/discovery/` ports the core repository's Reynard discovery
+examples. Each finds Reynard the Robot on the local network, connects
+through the discovered URL and calls `say`:
+
+```sh
+racket examples/features/discovery/find-service-by-type.rkt   # by root object type
+racket examples/features/discovery/find-node-by-name.rkt      # by node name
+racket examples/features/discovery/find-node-by-id.rkt '{758dfe16-...}'  # by node ID
+```
+
+The type, node name and service name can be passed as arguments.
+`find-node-by-name.rkt` prints the node ID that `find-node-by-id.rkt` needs.
+Discovery is IPv6 link-local multicast and Linux only; unlike the Python
+versions there is no need to wait a few seconds first, since each call sends
+discovery requests and listens for 3 seconds.
+
 ## Tests
 
 ```sh
@@ -236,6 +255,9 @@ It then runs interop tests against real services:
   (a generator of `TrajectoryStatus`), and with the streaming
   `position_command` wire. It checks each move against the reported joint
   position.
+- **The discovery examples** (`test/test-discovery-examples.rkt`), in the
+  discovery stage: Reynard runs as a node on the tap interfaces and each
+  example finds it and calls `say`.
 - **The standard device examples** (`test/test-device-examples.rkt`), run as
   programs against a loopback robot and a loopback camera
   (`test/loopback_camera.py`). The camera serves 96x48 frames that are red,

@@ -7,7 +7,7 @@
 ;;                   thirds)
 (require rackunit racket/class racket/draw racket/file racket/list racket/port
          racket/runtime-path racket/string compiler/find-exe
-         robotraconteur
+         robotraconteur "run-program.rkt"
          "../examples/standard_devices/camera/camera-util.rkt")
 
 (define-runtime-path robot-dir "../examples/standard_devices/robot")
@@ -17,29 +17,10 @@
 (define camera-url (getenv "RR_EX_CAMERA_URL"))
 (define tmp (make-temporary-directory))
 
-;; Runs a program with stdout and stderr captured; returns (values exit-code
-;; output), with exit code 'timeout if it was killed after `secs` seconds.
-;; The limit is enforced here rather than with GNU timeout: Racket 8.10 never
-;; reaps a `timeout` child (it moves itself to its own process group), so
-;; system* waited for ever.
-(define (run/timeout secs exe . args)
-  (define-values (p out in err) (apply subprocess #f #f 'stdout exe args))
-  (close-output-port in)
-  (define o (open-output-string))
-  (define pump (thread (lambda () (copy-port out o))))
-  (define done (sync/timeout secs p))
-  (unless done
-    (subprocess-kill p #t)
-    (subprocess-wait p))
-  ;; a grandchild (e.g. Xvfb under xvfb-run) may keep the pipe open
-  (unless (sync/timeout 5 pump) (kill-thread pump))
-  (close-input-port out)
-  (values (if done (subprocess-status p) 'timeout) (get-output-string o)))
-
 ;; Runs an example; each run is capped at 90 s so a hang fails the test
 ;; instead of the whole run.
 (define (run-example dir file . args)
-  (apply run/timeout 90 (find-exe) (path->string (build-path dir file)) args))
+  (apply run-racket 90 (build-path dir file) args))
 
 (define-syntax-rule (check-example-ok code output)
   (check-equal? code 0 (format "example failed:\n~a" output)))
