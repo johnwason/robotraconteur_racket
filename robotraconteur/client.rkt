@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Robot Raconteur client over the rr+tcp and rr+ws transports using Message Version 2.
 
-(require racket/tcp racket/string openssl "tls.rkt" racket/list racket/match racket/async-channel
+(require racket/tcp racket/string openssl "tls.rkt" "net.rkt" racket/list racket/match racket/async-channel
          net/url net/uri-codec
          "message.rkt" "robdef.rkt" "pack.rkt" "websocket.rkt")
 
@@ -290,10 +290,18 @@
 ;;                                             default port 443)
 ;;   rrs+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
 ;;                                            (Robot Raconteur node TLS)
+;; IPv6 hosts go in brackets, with an optional zone: [fe80::1%25eth0]
 ;; Returns (values transport host port http-path service nodename nodeid)
 ;; where transport is 'tcp, 'ws, 'wss or 'rrs-tcp.
 
-(define (parse-rr-url s)
+(define (parse-rr-url s0)
+  ;; IPv6 zone (RFC 6874: [fe80::1%25eth0]); net/url can't parse it, so it is
+  ;; split off here and re-attached to the host for tcp-connect
+  (define-values (s zone)
+    (cond
+      [(regexp-match #px"^([^:]+://\\[[^]%]*)%(?:25)?([^]]+)(\\].*)$" s0)
+       => (lambda (m) (values (string-append (cadr m) (cadddr m)) (caddr m)))]
+      [else (values s0 #f)]))
   (define u (string->url s))
   (define transport
     (case (url-scheme u)
@@ -314,7 +322,8 @@
            => (lambda (m) (let ([p (cadr m)]) (if (string-prefix? p "/") p (string-append "/" p))))]
           [else "/"]))
   (define default-port (if (eq? transport 'wss) 443 48653))
-  (values transport (url-host u) (or (url-port u) default-port) http-path service nodename nodeid))
+  (define host (if zone (string-append (url-host u) "%" zone) (url-host u)))
+  (values transport host (or (url-port u) default-port) http-path service nodename nodeid))
 
 (define (parse-nodeid s)
   (define hex (regexp-replace* #px"[{}-]" s ""))
@@ -399,20 +408,59 @@
 ;; system trust store and checks the hostname.
 ;; #:tls-context is the node TLS context for rrs+tcp (rr-make-node-tls-context);
 ;; the default trusts the Robot Raconteur node roots.
+;; #:timeout bounds the whole connect (TCP, TLS, WebSocket upgrade and the
+;; Robot Raconteur handshake); the TCP connect alone gives up after
+;; default-connect-timeout (5 s) or the overall timeout, whichever is shorter.
+(define default-rr-connect-timeout 10)
+
 (define (rr-connect url #:username [username #f] #:credentials [credentials #f]
-                    #:ssl-context [ssl-context #f] #:tls-context [tls-context #f])
+                    #:ssl-context [ssl-context #f] #:tls-context [tls-context #f]
+                    #:timeout [timeout default-rr-connect-timeout])
+  (call-with-connect-deadline
+   url timeout
+   (lambda ()
+     (connect* url username credentials ssl-context tls-context
+               (min default-connect-timeout timeout)))))
+
+;; Runs thunk in a thread under a fresh custodian. If it hasn't finished within
+;; `timeout` seconds (or the caller is interrupted), the custodian is shut
+;; down: sockets, the TLS/WebSocket threads and any connection threads started
+;; so far are all closed. On success the connection keeps living under that
+;; custodian, which belongs to the caller's custodian.
+(define (call-with-connect-deadline url timeout thunk)
+  (define cust (make-custodian))
+  (define ch (make-channel))
+  (parameterize ([current-custodian cust])
+    (thread (lambda ()
+              (channel-put ch (with-handlers ([(lambda (e) #t) (lambda (e) (cons 'raise e))])
+                                (cons 'ok (thunk)))))))
+  (define r #f)
+  (dynamic-wind
+   void
+   (lambda () (set! r (sync/timeout timeout ch)))
+   (lambda () (unless (and r (eq? (car r) 'ok)) (custodian-shutdown-all cust))))
+  (cond
+    [(not r)
+     (raise-rr-error 1 "RobotRaconteur.ConnectionError"
+                     (format "connecting to ~a timed out after ~a s" url timeout))]
+    [(eq? (car r) 'raise) (raise (cdr r))]
+    [else (cdr r)]))
+
+(define (connect* url username credentials ssl-context tls-context tcp-timeout)
   (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
+  (define (tcp-connect* h p) (rr-tcp-connect h p #:timeout tcp-timeout))
   (define local-nodeid (random-bytes 16))
   (define-values (in out tls-nodeid)
     (case transport
-      [(tcp) (let-values ([(i o) (tcp-connect host port)]) (values i o #f))]
-      [(ws) (let-values ([(i o) (ws-connect host port http-path)]) (values i o #f))]
+      [(tcp) (let-values ([(i o) (tcp-connect* host port)]) (values i o #f))]
+      [(ws) (let-values ([(i o) (ws-connect host port http-path #:connect tcp-connect*)])
+              (values i o #f))]
       [(wss) (let-values ([(i o) (ws-connect host port http-path
                                              #:tls (or ssl-context (ssl-secure-client-context)))])
                (values i o #f))]
       [(rrs-tcp)
        (define ctx (or tls-context (get-default-node-tls-context)))
-       (define-values (raw-in raw-out) (tcp-connect host port))
+       (define-values (raw-in raw-out) (tcp-connect* host port))
        (with-handlers ([(lambda (e) #t)
                         (lambda (e) (close-output-port raw-out) (close-input-port raw-in) (raise e))])
          (start-tls raw-in raw-out local-nodeid nodeid nodename ctx))]))

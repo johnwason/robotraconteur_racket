@@ -61,12 +61,17 @@
     (error 'ws-connect "server did not accept the Robot Raconteur WebSocket subprotocol"))
   (wrap-websocket raw-in raw-out))
 
-(define (ws-connect host port path #:tls [tls #f])
+(define (ws-connect host port path #:tls [tls #f] #:connect [connect tcp-connect])
   (define-values (raw-in raw-out)
-    (if tls (ssl-connect host port tls) (tcp-connect host port)))
-  ;; Host header omits the scheme's default port, as browsers do
+    (if tls (ssl-connect host port tls) (connect host port)))
+  ;; Host header: IPv6 literals in brackets without the zone; the scheme's
+  ;; default port is omitted, as browsers do
+  (define host-name
+    (if (string-contains? host ":")
+        (string-append "[" (car (string-split host "%")) "]")
+        host))
   (define host-header
-    (if (= port (if tls 443 80)) host (format "~a:~a" host port)))
+    (if (= port (if tls 443 80)) host-name (format "~a:~a" host-name port)))
   (with-handlers ([(lambda (e) #t)
                    (lambda (e) (close-input-port raw-in) (close-output-port raw-out) (raise e))])
     (ws-handshake raw-in raw-out host-header path)))

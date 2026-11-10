@@ -19,6 +19,8 @@ generated code.
 | `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws` and `rr+wss`) |
 | `robotraconteur/tls.rkt`     | Node TLS for `rrs+tcp`: libssl via the FFI, with the core's certificate rules |
 | `robotraconteur/rootca.rkt`  | The two Robot Raconteur node root certificates (2015 and 2020) |
+| `robotraconteur/net.rkt`     | TCP connect that races a zoneless IPv6 link-local address over every interface |
+| `robotraconteur/discovery.rkt` | Node and service discovery (IPv6 link-local multicast, libc sockets via the FFI) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
@@ -58,13 +60,14 @@ Other operations:
 
 | Area | Functions |
 |---|---|
-| Connect | `rr-connect` with `#:username` and `#:credentials`; `rr-attributes`; `rr-service-definitions` |
+| Connect | `rr-connect` with `#:username`, `#:credentials` and `#:timeout` (seconds, default 10); `rr-attributes`; `rr-service-definitions` |
 | Types | `rr-new-structure`, `rr-enum-values`, `rr-pack-element` / `rr-unpack-element` |
 | Members | `rr-object-members`, `rr-member-direction` (`'both`, `'readonly` or `'writeonly`) |
 | Generators | `rr-generator-next` (returns `eof` when finished), `rr-generator-close`, `rr-generator-abort`, `rr-generator->list` |
 | Wires | `rr-wire-in-value` (raises `ValueNotSet` if no value has arrived or it has expired), `rr-wire-wait-in-value`, `rr-wire-try-in-value`, `rr-wire-set-in-value-lifespan!`, `rr-wire-set-out-value!`, `rr-wire-try-out-value`, `rr-wire-add-listener!` |
 | Pipes | `rr-pipe-connect` (optional endpoint index), `rr-pipe-set-request-ack!`, `rr-pipe-add-listener!`, `rr-pipe-add-ack-listener!`, `rr-pipe-try-receive` |
 | Locks | `rr-request-object-lock` (`'user` or `'client`), `rr-release-object-lock`, `rr-monitor-enter` / `rr-monitor-exit`, `call-with-rr-monitor-lock` |
+| Discovery | `rr-find-nodes`, `rr-find-node-by-name`, `rr-find-node-by-id` (return `rr-node-info`), `rr-find-service-by-type` (returns `rr-service-info` with connection URLs); all take `#:timeout` in seconds |
 
 Event, wire and pipe listeners run in order on a single dispatch thread per
 connection. A listener must not block: hand work to another thread or use an
@@ -126,6 +129,38 @@ verification rules against one server per case:
 connects over `rr+wss` to the public test service at `wstest2.wasontech.com`,
 the same check as the core's `test/extra/tcp_tls/test_ws_https.py`.
 
+Discovery is tested inside the same container. With `/dev/net/tun`
+available, the container gets `NET_ADMIN` and creates two tap interfaces in
+its own network namespace; `test/tap_sink.py` holds each open so it gets an
+IPv6 link-local address. Two test services, running as separate nodes,
+announce on both. `test/test-discovery.rkt` then:
+
+- finds both nodes, each with one link-local URL per interface, scoped to
+  the interface it was heard on (`%25rrtest0`, `%25rrtest1`);
+- finds nodes by name and by id;
+- finds services by type and connects through the discovered URLs.
+
+`test/test-timeouts.rkt` uses the same setup to check that `rr-connect` gives
+up promptly:
+
+- an address that never answers fails after about 5 s (TCP connect timeout);
+- `#:timeout` shorter than that wins;
+- a server that accepts but never answers (`test/hung_server.py`) times out
+  for `rr+tcp` and `rr+ws`, including the 10 s default;
+- every timed-out connection is closed;
+- a closed port is still refused immediately.
+
+`test/test-zones.rkt` uses the link-local address of `rrtest0`, which only
+answers through `rrtest0`; through `rrtest1` a connect hangs. It checks that:
+
+- the right zone connects and the wrong one doesn't;
+- a URL without a zone still connects promptly over `rr+tcp` and `rr+ws`;
+- a full session works over that connection.
+
+The container still uses `--network none`, so no packet reaches a real
+network. Without `/dev/net/tun` the stage is skipped (`RR_REQUIRE_DISCOVERY=1`
+makes that a failure).
+
 It then runs interop tests against real services:
 
 - **[Reynard the Robot](https://github.com/robotraconteur/reynard-the-robot)**
@@ -167,7 +202,35 @@ tests, the Python async API tests, and numpy helpers.
 ## Limitations
 
 - Client only. Only `rr+tcp`, `rrs+tcp`, `rr+ws` and `rr+wss`: no local or
-  intra transports, and no node discovery.
+  intra transports.
+- `rr-connect` doesn't wait for the kernel's TCP timeout (about 127 s on
+  Linux). The TCP connect gives up after 5 s, the core's default, and the
+  whole connect after `#:timeout` seconds (default 10). The whole connect
+  covers TCP, TLS, the WebSocket upgrade and the Robot Raconteur handshake.
+  On timeout everything opened for that connect is closed, and a
+  `RobotRaconteur.ConnectionError` is raised. Calls after connecting keep
+  their own 30 s request timeout.
+- IPv6 link-local addresses work with or without a zone. With a zone
+  (`rr+tcp://[fe80::1%25eth0]:port/...`) it is used as given. Without one,
+  `rr-connect` tries the address on every local interface that has a
+  link-local address, all at once, and keeps the first connection, as the C++
+  core does. Racing matters: on a wrong interface the connect only fails when
+  TCP times out. Interfaces are found on Linux only (`/proc/net/if_inet6`).
+  This covers `rr+tcp`, `rrs+tcp` and `rr+ws`, not `rr+wss`.
+- Discovery works like the core's default: IPv6 link-local multicast on
+  `FF02::BA86`, UDP port 48653. The client sends request packets and collects
+  node announcements, then lists services through each node's
+  `RobotRaconteurServiceIndex`. Limits:
+  - Linux only. Interfaces come from `/proc/net/if_inet6`, and the socket is
+    made through libc via the FFI, because `racket/udp` can only join IPv4
+    multicast groups.
+  - No IPv4 broadcast discovery (off by default in the core too).
+  - No discovery through other transports.
+  - No subscriptions or continuous background listening: each call listens
+    for `#:timeout` seconds.
+  - Binding port 48653 uses `SO_REUSEPORT`. On Linux that only shares the
+    port with sockets of the same user, so it can fail if a node run by
+    another user already holds it.
 - `rrs+tcp` follows the C++ core:
   - the client sends `STARTTLS` before `CreateConnection`, then runs TLS on
     the same connection;
@@ -202,8 +265,9 @@ tests, the Python async API tests, and numpy helpers.
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. The
 `test` job builds the dev image, builds the C++ test server from
 `johnwason/robotraconteur` (the pinned `test-vectors-blob` commit, cached
-between runs), and runs `run_tests.sh` with `RR_REQUIRE_CPP_SERVER=1`, so the
-ServiceTest stage can't be skipped silently. The `online` job runs
+between runs), and runs `run_tests.sh` with `RR_REQUIRE_CPP_SERVER=1` and
+`RR_REQUIRE_DISCOVERY=1`, so neither the ServiceTest stage nor the discovery
+stage can be skipped silently. The `online` job runs
 `run_online_tests.sh` against `wstest2.wasontech.com`; its failures don't fail
 the workflow.
 

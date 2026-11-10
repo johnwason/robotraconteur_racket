@@ -221,7 +221,9 @@ def main():
                                          argv=["--robotraconteur-nodeid=" + tls_nodeid,
                                                "--robotraconteur-local-enable=false"])
     else:
-        setup = RR.ServerNodeSetup("experimental.racket_test", PORT)
+        # RR_TEST_NODENAME: node name, so several services can run as separate
+        # nodes in one namespace (discovery tests)
+        setup = RR.ServerNodeSetup(os.environ.get("RR_TEST_NODENAME", "experimental.racket_test"), PORT)
     with setup:
         RRN.RegisterServiceType(robdef)
         obj = TestObject()
