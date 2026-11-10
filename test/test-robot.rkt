@@ -16,11 +16,13 @@
 (define (state) (rr-wire-wait-in-value state-wire))
 (define (joint-pos) (rr-struct-ref (state) "joint_position"))
 
-;; wait (up to timeout s) for the measured joint position to reach target
-(define (wait-for-position target [timeout 10])
+;; wait (up to timeout s) for the measured joint position to reach target;
+;; returns #t, or the last measured position so a failure shows it
+(define (wait-for-position target [timeout 10] #:tol [tol 1e-3])
   (let loop ([t 0.0])
-    (cond [(vec-close? (joint-pos) target) #t]
-          [(> t timeout) #f]
+    (define pos (joint-pos))
+    (cond [(vec-close? pos target tol) #t]
+          [(> t timeout) pos]
           [else (sleep 0.05) (loop (+ t 0.05))])))
 
 (test-case "connect and read standard types"
@@ -49,7 +51,7 @@
   (check-equal? (rr-get c "command_mode") 1)
   (define target (vector 0.1 -0.2 0.3 0.0 0.2 -0.1))
   (rr-call c "jog_freespace" target (make-vector 6 1.0) #t)
-  (check-true (wait-for-position target)))
+  (check-equal? (wait-for-position target) #t))
 
 (test-case "execute_trajectory (generator of TrajectoryStatus)"
   (rr-set! c "command_mode" 'halt)
@@ -76,7 +78,10 @@
   (define statuses (rr-generator->list gen))
   (check-true (pair? statuses))
   (check-equal? (rr-struct-type (last statuses)) "com.robotraconteur.robotics.trajectory.TrajectoryStatus")
-  (check-true (wait-for-position end 3)))
+  ;; AbstractRobot samples the trajectory every update period (10 ms), so the
+  ;; final setpoint can stop up to one step short of the last waypoint:
+  ;; max joint speed * period = (0.6 rad / 1.5 s) * 0.01 s = 0.004 rad.
+  (check-equal? (wait-for-position end 3 #:tol 5e-3) #t))
 
 (test-case "streaming position_command wire"
   (rr-set! c "command_mode" 'halt)
@@ -90,7 +95,7 @@
     (rr-struct-set! cmd "command" target)
     (rr-wire-set-out-value! cmd-wire cmd)
     (sleep 0.01))
-  (check-true (wait-for-position target 2))
+  (check-equal? (wait-for-position target 2) #t)
   (rr-wire-close cmd-wire)
   (rr-set! c "command_mode" 'halt))
 
