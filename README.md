@@ -1,8 +1,9 @@
 # Robot Raconteur client for Racket (experimental)
 
 A small, pure-Racket Robot Raconteur **client**. It talks to standard Robot
-Raconteur services over `rr+tcp`, `rr+ws` (WebSocket) or `rr+wss` (WebSocket
-over standard TLS) using Message Version 2. It reads the
+Raconteur services over `rr+tcp`, `rrs+tcp` (Robot Raconteur node TLS),
+`rr+ws` (WebSocket) or `rr+wss` (WebSocket over standard TLS) using Message
+Version 2. It reads the
 service definitions from the service at connect time, so you don't need
 generated code.
 
@@ -14,6 +15,8 @@ generated code.
 | `robotraconteur/robdef.rkt`  | Minimal `.robdef` parser (structs, pods, namedarrays, enums, objects) |
 | `robotraconteur/pack.rkt`    | Converts Racket values to and from message elements, using the type info |
 | `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws` and `rr+wss`) |
+| `robotraconteur/tls.rkt`     | Node TLS for `rrs+tcp`: libssl via the FFI, with the core's certificate rules |
+| `robotraconteur/rootca.rkt`  | The two Robot Raconteur node root certificates (2015 and 2020) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
@@ -33,6 +36,8 @@ generated code.
 ;; (rr-connect "rr+ws://127.0.0.1:22222/?service=test")
 ;; or over WebSocket with TLS, e.g. behind an HTTPS reverse proxy (default port 443):
 ;; (rr-connect "rr+wss://wstest2.wasontech.com/robotraconteur?service=testobj")
+;; or with Robot Raconteur node TLS (the server needs a node certificate):
+;; (rr-connect "rrs+tcp://127.0.0.1:22222/?service=test")
 (rr-get obj "d1")                       ; properties
 (rr-set! obj "d1" 2.0)
 (rr-call obj "add" 1.0 2.0)             ; functions
@@ -101,6 +106,20 @@ proxy) with a throwaway self-signed certificate valid for `localhost` only.
 `test/test-wss.rkt` then checks that a certificate outside the trust store, and
 a trusted certificate used for the wrong hostname, are both rejected.
 
+`rrs+tcp` runs the full suite against a secure service (TLS required) whose
+node certificate comes from a throwaway PKI built by `test/make_test_pki.sh`.
+That PKI has the same shape as the real one: root, intermediate and node
+certificates, each with its critical Robot Raconteur extension. The client is
+given the test root explicitly. `test/test-rrs.rkt` then checks the
+verification rules against one server per case:
+
+- a certificate naming another node is rejected;
+- a certificate without the node extension is rejected;
+- a certificate with an unknown critical extension is rejected;
+- a chain the default roots don't cover is rejected;
+- a `nodeid` in the URL that doesn't match the server fails;
+- plaintext `rr+tcp` to the secure server is refused.
+
 `./run_online_tests.sh` needs internet access and is kept separate. It
 connects over `rr+wss` to the public test service at `wstest2.wasontech.com`,
 the same check as the core's `test/extra/tcp_tls/test_ws_https.py`.
@@ -145,12 +164,28 @@ tests, the Python async API tests, and numpy helpers.
 
 ## Limitations
 
-- Client only. Only `rr+tcp`, `rr+ws` and `rr+wss`: no Robot Raconteur TLS
-  (`rrs+tcp`), local or intra transports, and no node discovery. `rr+wss` is
-  plain web TLS: the certificate chain and hostname are checked, by default
-  against the system trust store. `rr-make-ssl-context #:trust (list "ca.pem")`
-  builds a context that also trusts extra certificates; pass it to `rr-connect`
-  as `#:ssl-context`. No client certificates. The WebSocket client sends no
+- Client only. Only `rr+tcp`, `rrs+tcp`, `rr+ws` and `rr+wss`: no local or
+  intra transports, and no node discovery.
+- `rrs+tcp` follows the C++ core:
+  - the client sends `STARTTLS` before `CreateConnection`, then runs TLS on
+    the same connection;
+  - the chain must lead to one of the two embedded Robot Raconteur node roots
+    (`rootca.rkt`);
+  - each certificate must carry the critical Robot Raconteur extension for its
+    position, and no unknown critical extensions;
+  - the node certificate must be `CN=Robot Raconteur Node {nodeid}` for the
+    node that answered.
+
+  `rr-make-node-tls-context #:extra-roots (list "root.pem")` adds roots
+  (`#:default-roots? #f` drops the embedded ones); pass it as `#:tls-context`.
+  There are no client certificates, so services that tie users to a client
+  NodeID (mutual authentication) can't be used. `rrs+ws` and `rrs+wss` aren't
+  supported. `rrs+tcp` needs OpenSSL 1.1 or 3 (the libraries Racket's
+  `openssl` collection loads).
+- `rr+wss` is plain web TLS: the certificate chain and hostname are checked,
+  by default against the system trust store. `rr-make-ssl-context #:trust
+  (list "ca.pem")` builds a context that also trusts extra certificates; pass
+  it to `rr-connect` as `#:ssl-context`. The WebSocket client sends no
   `Origin` header (servers accept that from non-browser clients) and does not
   follow HTTP redirects.
 - Only Message Version 2. Version 4 and string tables are not implemented

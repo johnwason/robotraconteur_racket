@@ -11,7 +11,12 @@
   (let ([ca (getenv "RR_TEST_CA")])
     (and ca (rr-make-ssl-context #:trust (list ca)))))
 
-(define c (rr-connect url #:ssl-context ssl-context))
+;; RR_TEST_TLS_ROOT: extra root certificate to trust for rrs+tcp (test PKI)
+(define tls-context
+  (let ([root (getenv "RR_TEST_TLS_ROOT")])
+    (and root (rr-make-node-tls-context #:extra-roots (list root)))))
+
+(define c (rr-connect url #:ssl-context ssl-context #:tls-context tls-context))
 (printf "connected: ~a\n" c)
 
 (test-case "service definitions and attributes"

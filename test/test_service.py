@@ -210,7 +210,19 @@ def main():
 
     # Tests run in a container with --network none, so discovery traffic
     # never leaves the container.
-    with RR.ServerNodeSetup("experimental.racket_test", PORT):
+    # RR_TEST_TLS_NODEID: run as a secure server (TLS required) with this
+    # NodeID; the node certificate is read from
+    # <config dir>/certificates/<nodeid>.p12 (ROBOTRACONTEUR_USER_CONFIG_DIR, or
+    # ROBOTRACONTEUR_SYSTEM_CONFIG_DIR when running as root, e.g. in the container)
+    tls_nodeid = os.environ.get("RR_TEST_TLS_NODEID")
+    if tls_nodeid:
+        # (no node name: a name would assign its own stored NodeID first)
+        setup = RR.SecureServerNodeSetup("", PORT,
+                                         argv=["--robotraconteur-nodeid=" + tls_nodeid,
+                                               "--robotraconteur-local-enable=false"])
+    else:
+        setup = RR.ServerNodeSetup("experimental.racket_test", PORT)
+    with setup:
         RRN.RegisterServiceType(robdef)
         obj = TestObject()
         ctx = RRN.RegisterService("test", "experimental.racket_test.TestObject", obj)
