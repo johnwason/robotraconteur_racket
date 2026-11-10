@@ -1,5 +1,7 @@
 # Robot Raconteur client for Racket (experimental)
 
+[![CI](https://github.com/johnwason/robotraconteur_racket/actions/workflows/ci.yml/badge.svg)](https://github.com/johnwason/robotraconteur_racket/actions/workflows/ci.yml)
+
 A small, pure-Racket Robot Raconteur **client**. It talks to standard Robot
 Raconteur services over `rr+tcp`, `rrs+tcp` (Robot Raconteur node TLS),
 `rr+ws` (WebSocket) or `rr+wss` (WebSocket over standard TLS) using Message
@@ -194,3 +196,18 @@ tests, the Python async API tests, and numpy helpers.
   and received, but nothing is throttled).
 - The robdef parser is permissive and only extracts type information. It does
   not validate definitions, and constants other than enums are ignored.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. The
+`test` job builds the dev image, builds the C++ test server from
+`johnwason/robotraconteur` (the pinned `test-vectors-blob` commit, cached
+between runs), and runs `run_tests.sh` with `RR_REQUIRE_CPP_SERVER=1`, so the
+ServiceTest stage can't be skipped silently. The `online` job runs
+`run_online_tests.sh` against `wstest2.wasontech.com`; its failures don't fail
+the workflow.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+

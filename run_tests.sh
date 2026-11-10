@@ -11,6 +11,8 @@
 #
 # RR_SRC (default ~/RobotRaconteur2/robotraconteur) is mounted read-only when
 # present, to check that test/data/test_vectors.bin matches the checkout.
+# RR_REQUIRE_CPP_SERVER=1 fails the run instead of skipping the ServiceTest
+# stage when the C++ test server has not been built (used by CI).
 set -e
 cd "$(dirname "$0")"
 IMAGE=rr-racket-dev
@@ -18,7 +20,8 @@ RR_SRC=${RR_SRC:-$HOME/RobotRaconteur2/robotraconteur}
 podman image exists "$IMAGE" || podman build -t "$IMAGE" .
 SRC_MOUNT=""
 [ -d "$RR_SRC/test/data" ] && SRC_MOUNT="-v $RR_SRC:/src:ro,Z"
-exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT "$IMAGE" sh -c '
+exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT \
+  -e RR_REQUIRE_CPP_SERVER="${RR_REQUIRE_CPP_SERVER:-0}" "$IMAGE" sh -c '
   set -e
   raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/servicetest/*.rkt
@@ -120,6 +123,7 @@ exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT "$IMAGE" sh -c 
     raco test test/servicetest || status=1
   else
     echo "SKIPPED: C++ test server not built (run ./build_cpp_test_server.sh)"
+    if [ "$RR_REQUIRE_CPP_SERVER" = 1 ]; then status=1; fi
   fi
   exit $status
 '

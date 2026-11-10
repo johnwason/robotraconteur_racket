@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Robot Raconteur checkout with the test vector blob and the C++ test server
+  # (test-vectors-blob branch). Pinned so the cached server matches.
+  RR_REPO: johnwason/robotraconteur
+  RR_REF: a4623e238e895bced2dc27b7f9b01ecd4aa3eddf
+  CPP_SERVER: build/rr-cpp/test/out/lib/librobotraconteur_test_server_lib.so
+
+jobs:
+  test:
+    name: Tests (podman, no network)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Robot Raconteur (${{ env.RR_REF }})
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RR_REPO }}
+          ref: ${{ env.RR_REF }}
+          path: rr-src
+
+      - name: Build dev image
+        run: podman build -t rr-racket-dev .
+
+      # The library is self-contained apart from system libraries, so only it
+      # is cached, keyed on the source commit and the build environment.
+      - name: Restore C++ test server
+        id: cpp-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CPP_SERVER }}
+          key: rr-cpp-test-server-${{ env.RR_REF }}-${{ hashFiles('Dockerfile', 'build_cpp_test_server.sh') }}
+
+      - name: Build C++ test server
+        if: steps.cpp-cache.outputs.cache-hit != 'true'
+        run: RR_SRC="$GITHUB_WORKSPACE/rr-src" ./build_cpp_test_server.sh
+
+      - name: Save C++ test server
+        if: steps.cpp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CPP_SERVER }}
+          key: ${{ steps.cpp-cache.outputs.cache-primary-key }}
+
+      - name: Run tests
+        run: RR_SRC="$GITHUB_WORKSPACE/rr-src" RR_REQUIRE_CPP_SERVER=1 ./run_tests.sh
+
+  online:
+    # rr+wss against the public test server (wstest2.wasontech.com). An
+    # outage there should not block changes, so failures are not fatal.
+    name: Online rr+wss test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dev image
+        run: podman build -t rr-racket-dev .
+      - name: Run online tests
+        run: ./run_online_tests.sh
