@@ -204,6 +204,7 @@
                          (list (entry-service-path en) (entry-member-name en) (vector-ref idx 0)) #f))
      (when p (set-pipe-endpoint-closed?! p #t) (async-channel-put (pipe-endpoint-queue p) eof))]
     [(eq? t 'ServiceClosed) (shutdown! c)]
+    [(eq? t 'ServicePathReleasedReq) (release-service-path! c (entry-service-path en))]
     [(eq? t 'EndpointCheckCapability)
      (send-entries! c (list (entry 'EndpointCheckCapabilityRet (entry-service-path en)
                                    (entry-member-name en) (entry-request-id en)
@@ -539,12 +540,15 @@
                                                             (number->string index)
                                                             index)) "]")
                        "")))
+  ;; Always ask for the type: a path can be released by the service and
+  ;; later refer to a different object (e.g. varobject members).
+  (define res (process-request c (entry 'ObjectTypeName path "" 0 0 ""
+                                        (list (make-elem "clientversion" dt-string client-version)))))
+  (define t (elem-data (find-elem (entry-elements res) "objecttype")))
+  (define cached (hash-ref (conn-objects c) path #f))
   (cond
-    [(hash-ref (conn-objects c) path #f) => values]
+    [(and cached (equal? (rr-object-type cached) t)) cached]
     [else
-     (define res (process-request c (entry 'ObjectTypeName path "" 0 0 ""
-                                           (list (make-elem "clientversion" dt-string client-version)))))
-     (define t (elem-data (find-elem (entry-elements res) "objecttype")))
      (define svc (car (string-split-last t)))
      (unless (hash-ref (type-registry-defs (conn-registry c)) svc #f)
        (define d (process-request c (entry 'GetServiceDesc path "" 0 0 ""
@@ -553,6 +557,17 @@
        (registry-add-def! (conn-registry c)
                           (parse-robdef (elem-data (find-elem (entry-elements d) "servicedef")))))
      (make-object c path t)]))
+
+;; The service released `path`: forget it and every object below it.
+(define (release-service-path! c path)
+  (define (under? p)
+    (or (equal? p path) (string-prefix? p (string-append path "."))
+        (string-prefix? p (string-append path "["))))
+  (for ([p (in-list (hash-keys (conn-objects c)))] #:when (under? p))
+    (hash-remove! (conn-objects c) p))
+  (for ([tbl (list (conn-event-listeners c) (conn-callbacks c) (conn-wires c))])
+    (for ([k (in-list (hash-keys tbl))] #:when (under? (car k)))
+      (hash-remove! tbl k))))
 
 ;; --- events
 
