@@ -31,6 +31,7 @@
          rr-generator?
          rr-generator-next
          rr-generator-close
+         rr-generator-abort
          rr-generator->list
          ;; wires
          rr-wire-peek-in
@@ -506,18 +507,28 @@
            (unpack-elem (reg-of obj) (rr-generator-ns g) rt
                         (find-elem (entry-elements res) "return"))))]))
 
+(define (generator-end-request g err-sym err-name msg)
+  (define obj (rr-generator-obj g))
+  (process-request (rr-object-conn obj)
+                   (entry 'GeneratorNextReq (rr-object-path obj) (rr-generator-member g) 0
+                          (message-error-code err-sym) ""
+                          (list (make-elem "errorname" dt-string err-name)
+                                (make-elem "errorstring" dt-string msg)
+                                (make-elem "index" dt-int32 (vector (rr-generator-index g)))))))
+
+;; Close: the generator finishes normally; later rr-generator-next returns eof.
 (define (rr-generator-close g)
   (unless (rr-generator-done? g)
     (set-rr-generator-done?! g #t)
-    (define obj (rr-generator-obj g))
     (with-handlers ([exn:fail:robotraconteur? void])
-      (process-request (rr-object-conn obj)
-                       (entry 'GeneratorNextReq (rr-object-path obj) (rr-generator-member g) 0
-                              (message-error-code 'StopIteration) ""
-                              (list (make-elem "errorname" dt-string "RobotRaconteur.StopIteration")
-                                    (make-elem "errorstring" dt-string "")
-                                    (make-elem "index" dt-int32 (vector (rr-generator-index g)))))))
+      (generator-end-request g 'StopIteration "RobotRaconteur.StopIteration" ""))
     (void)))
+
+;; Abort: the operation is cancelled. Later calls go to the service, which
+;; reports the abort (typically an OperationAborted error).
+(define (rr-generator-abort g)
+  (generator-end-request g 'AbortOperation "RobotRaconteur.AbortOperation" "Generator abort requested")
+  (void))
 
 (define (rr-generator->list g)
   (let loop ([acc '()])
