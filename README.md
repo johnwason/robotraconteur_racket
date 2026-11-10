@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/figures/logo-header.svg"></p>
+
 # Robot Raconteur client for Racket (experimental)
 
 > **This is an AI generation experiment.** The library, its tests and its
