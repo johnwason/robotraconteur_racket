@@ -16,6 +16,9 @@ generated code.
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
+| `test/servicetest/`          | Ports of the Robot Raconteur `ServiceTestClient*.py` tests, the test vector reader and the C++ test server harness |
+| `test/data/test_vectors.bin` | Copy of the Robot Raconteur test vector blob (`TEST_VECTORS_FORMAT.md`) |
+| `build_cpp_test_server.sh`   | Builds the Robot Raconteur C++ test server inside the container |
 | `examples/simple.rkt`        | Short usage example |
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
 | `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
@@ -35,11 +38,27 @@ generated code.
 (rr-generator->list (rr-call obj "count_to" 3))
 (rr-get (rr-objref obj "subs" 2) "name") ; objrefs (indexed or not)
 (rr-wire-peek-in obj "w_in")            ; wires: peek/poke or connect
-(define w (rr-wire-connect obj "w_in")) (rr-wire-in-value w)
+(define w (rr-wire-connect obj "w_in")) (rr-wire-wait-in-value w)
 (define p (rr-pipe-connect obj "p1"))   ; pipes
 (rr-pipe-send p (vector 1.0)) (rr-pipe-receive p)
 (rr-close obj)
 ```
+
+Other operations:
+
+| Area | Functions |
+|---|---|
+| Connect | `rr-connect` with `#:username` and `#:credentials`; `rr-attributes`; `rr-service-definitions` |
+| Types | `rr-new-structure`, `rr-enum-values`, `rr-pack-element` / `rr-unpack-element` |
+| Members | `rr-object-members`, `rr-member-direction` (`'both`, `'readonly` or `'writeonly`) |
+| Generators | `rr-generator-next` (returns `eof` when finished), `rr-generator-close`, `rr-generator-abort`, `rr-generator->list` |
+| Wires | `rr-wire-in-value` (raises `ValueNotSet` if no value has arrived or it has expired), `rr-wire-wait-in-value`, `rr-wire-try-in-value`, `rr-wire-set-in-value-lifespan!`, `rr-wire-set-out-value!`, `rr-wire-try-out-value`, `rr-wire-add-listener!` |
+| Pipes | `rr-pipe-connect` (optional endpoint index), `rr-pipe-set-request-ack!`, `rr-pipe-add-listener!`, `rr-pipe-add-ack-listener!`, `rr-pipe-try-receive` |
+| Locks | `rr-request-object-lock` (`'user` or `'client`), `rr-release-object-lock`, `rr-monitor-enter` / `rr-monitor-exit`, `call-with-rr-monitor-lock` |
+
+Event, wire and pipe listeners run in order on a single dispatch thread per
+connection. A listener must not block: hand work to another thread or use an
+async channel.
 
 ### How values map
 
@@ -53,11 +72,15 @@ generated code.
 | `T{int32}`, `T{string}` | hash |
 | `T{list}` | list |
 | enum | integer (a symbol naming the value is accepted when sending) |
-| `varvalue` | the value's type is detected automatically; wrap it in `(rr-varvalue v "int16[]")` to force a type |
+| `varvalue` | the value's type is detected automatically; wrap it in `(rr-varvalue v "int16[]")` to force a type. Numbers in a received varvalue are always vectors, because the wire does not distinguish a scalar from a one-element array |
+| pod/namedarray fields `T[N]`, `T[M,N]` | vector, `rr-multidim` |
 | null | `'null` |
 
-Remote errors are raised as `exn:fail:robotraconteur`, which has
-`error-code` and `error-name` fields.
+Remote errors are raised as `exn:fail:robotraconteur`, with the fields
+`error-code`, `error-name` (for example `"RobotRaconteur.InvalidOperation"` or a
+service-defined exception name), `error-message`, `error-subname` and
+`error-param`. `(rr-error-type e)` gives the code as a symbol, such as
+`'ObjectLockedError`.
 
 ## Tests
 
@@ -86,6 +109,29 @@ It then runs interop tests against real services:
   `position_command` wire. It checks each move against the reported joint
   position.
 
+### ServiceTest ports against the C++ test server
+
+`test/servicetest/` ports Robot Raconteur's own client tests,
+`ServiceTestClient.py`, `ServiceTestClient2.py` and `ServiceTestClient3.py`
+(on the `test-vectors-blob` branch), to Racket. They run against the
+Robot Raconteur C++ test server:
+
+```sh
+./build_cpp_test_server.sh   # once; RR_SRC defaults to ~/RobotRaconteur2/robotraconteur
+./run_tests.sh
+```
+
+The build mounts the checkout read-only and builds into `build/rr-cpp`, with
+networking off. The tests load `librobotraconteur_test_server_lib.so` through
+Racket's FFI and run the server inside the test process. To use an external
+`robotraconteur_test_server` instead, set `ROBOTRACONTEUR_TEST_SERVER_URL`
+(for example `rr+tcp://localhost:22222`).
+
+Expected values come from `test/data/test_vectors.bin` through a reader that
+follows the blob format's reader requirements (`test-vectors.rkt`).
+`run_tests.sh` checks that this copy matches the checkout. Not ported: memory
+tests, the Python async API tests, and numpy helpers.
+
 ## Limitations
 
 - Client only. Only `rr+tcp` and `rr+ws`: no TLS (`rrs+tcp`, `rr+wss`), local,
@@ -94,7 +140,7 @@ It then runs interop tests against real services:
   follow HTTP redirects.
 - Only Message Version 2. Version 4 and string tables are not implemented
   (the client advertises only V2, and servers fall back to it).
-- No memories, object locking, subscriptions, reconnect, or pipe flow control
-  (acks are sent when requested, but nothing is throttled).
+- No memories, subscriptions, reconnect, or pipe flow control (acks are sent
+  and received, but nothing is throttled).
 - The robdef parser is permissive and only extracts type information. It does
-  not validate definitions, and constants are ignored.
+  not validate definitions, and constants other than enums are ignored.
