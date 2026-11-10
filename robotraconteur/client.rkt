@@ -21,6 +21,12 @@
          rr-set-callback!
          rr-new-structure
          rr-enum-values
+         ;; locks
+         rr-request-object-lock
+         rr-release-object-lock
+         rr-monitor-enter
+         rr-monitor-exit
+         call-with-rr-monitor-lock
          ;; generators
          rr-generator?
          rr-generator-next
@@ -568,6 +574,40 @@
   (for ([tbl (list (conn-event-listeners c) (conn-callbacks c) (conn-wires c))])
     (for ([k (in-list (hash-keys tbl))] #:when (under? (car k)))
       (hash-remove! tbl k))))
+
+;; --- object locks and monitor locks
+
+(define (session-op obj command . elems)
+  (define res (process-request (rr-object-conn obj)
+                               (entry 'ClientSessionOpReq (rr-object-path obj) command 0 0 "" elems)))
+  (elem-data (find-elem (entry-elements res) "return")))
+
+;; kind: 'user (all sessions of this user) or 'client (this session only)
+(define (rr-request-object-lock obj [kind 'user])
+  (session-op obj (case kind
+                    [(user) "RequestObjectLock"]
+                    [(client) "RequestClientObjectLock"]
+                    [else (error 'rr-request-object-lock "kind must be 'user or 'client: ~a" kind)])))
+
+(define (rr-release-object-lock obj) (session-op obj "ReleaseObjectLock"))
+
+;; Blocks until the monitor lock is held (timeout in ms, -1 = forever).
+(define (rr-monitor-enter obj [timeout -1])
+  (let loop ([ret (session-op obj "MonitorEnter" (make-elem "timeout" dt-int32 (vector timeout)))])
+    (case ret
+      [("OK") (void)]
+      [("Continue") (loop (session-op obj "MonitorContinueEnter"))]
+      [else (raise-rr-error 2 "RobotRaconteur.ProtocolError"
+                            (format "unexpected MonitorEnter return ~a" ret))])))
+
+(define (rr-monitor-exit obj)
+  (define ret (session-op obj "MonitorExit"))
+  (unless (equal? ret "OK")
+    (raise-rr-error 2 "RobotRaconteur.ProtocolError" (format "unexpected MonitorExit return ~a" ret))))
+
+(define (call-with-rr-monitor-lock obj thunk #:timeout [timeout -1])
+  (rr-monitor-enter obj timeout)
+  (dynamic-wind void thunk (lambda () (rr-monitor-exit obj))))
 
 ;; --- events
 
