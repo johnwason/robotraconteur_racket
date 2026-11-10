@@ -1,6 +1,6 @@
 #lang racket/base
 ;; Interop test against Reynard the Robot (pip package reynard-the-robot).
-(require rackunit racket/math "../robotraconteur/main.rkt")
+(require rackunit racket/math robotraconteur)
 
 (define url (or (getenv "RR_REYNARD_URL") "rr+tcp://127.0.0.1:29200?service=reynard"))
 (define c (rr-connect url))

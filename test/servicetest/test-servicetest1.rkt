@@ -7,7 +7,7 @@
 ;; exercises Python's callback-style async API; the same operations are
 ;; covered synchronously here).
 (require rackunit racket/list racket/async-channel
-         "../../robotraconteur/main.rkt" "test-server.rkt" "util.rkt")
+         robotraconteur "test-server.rkt" "util.rkt")
 
 (define ts1 "com.robotraconteur.testing.TestService1.")
 

@@ -7,7 +7,7 @@
 ;; RR_HUNG_PORT    port of test/hung_server.py on 127.0.0.1
 ;; RR_HUNG_LOG     its log, to check that timed-out connections were closed
 ;; RR_CLOSED_PORT  a port on 127.0.0.1 with nothing listening
-(require rackunit racket/file racket/string "../robotraconteur/main.rkt")
+(require rackunit racket/file racket/string robotraconteur)
 
 (define dead-host (getenv "RR_DEAD_HOST"))
 (define dead-port (getenv "RR_DEAD_PORT"))

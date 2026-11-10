@@ -2,7 +2,7 @@
 ;; Shared helpers for the ServiceTest ports, mirroring the numpy assertions
 ;; used by the Python ServiceTestClient*.py files.
 (require rackunit racket/list
-         "../../robotraconteur/main.rkt" "test-vectors.rkt")
+         robotraconteur "test-vectors.rkt")
 
 (provide tv tv-md
          check-allclose

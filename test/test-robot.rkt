@@ -3,7 +3,7 @@
 ;; service: test/loopback_robot.py (AbstractRobot driver whose measured joint
 ;; position follows the command).
 (require rackunit racket/list racket/math
-         "../robotraconteur/main.rkt")
+         robotraconteur)
 
 (define url (or (getenv "RR_ROBOT_URL") "rr+tcp://127.0.0.1:59926/?service=robot"))
 (define c (rr-connect url))

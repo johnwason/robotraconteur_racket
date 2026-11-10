@@ -7,7 +7,7 @@
 ;; rr-struct, arrays are vectors, multidim arrays are rr-multidim (column major,
 ;; matching the Python reshape(..., order="F")).
 (require rackunit
-         "../../robotraconteur/main.rkt" "test-vectors.rkt" "util.rkt")
+         robotraconteur "test-vectors.rkt" "util.rkt")
 
 (provide make-seqgen seq-double! seq-uint32! seq-int8!
          fill-testpod1 verify-testpod1

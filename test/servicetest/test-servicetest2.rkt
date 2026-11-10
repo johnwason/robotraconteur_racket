@@ -7,7 +7,7 @@
 ;; scope); AsyncTestWirePeekPoke (Python callback-style async API);
 ;; NamedArrayToArray/ArrayToNamedArray (numpy helpers, not protocol features).
 (require rackunit racket/list
-         "../../robotraconteur/main.rkt" "../../robotraconteur/message.rkt"
+         robotraconteur robotraconteur/message
          "test-server.rkt" "util.rkt" "servicetest2-util.rkt")
 
 (define (with-client f)

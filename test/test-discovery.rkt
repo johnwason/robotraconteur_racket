@@ -6,7 +6,7 @@
 ;; for LANs, and two test services (separate nodes, named
 ;; experimental.racket_test and experimental.racket_test2) listening on the
 ;; ports in RR_DISCOVERY_PORTS. Each node announces on every interface.
-(require rackunit racket/list racket/string "../robotraconteur/main.rkt")
+(require rackunit racket/list racket/string robotraconteur)
 
 (define ports (string-split (getenv "RR_DISCOVERY_PORTS")))
 (define ifaces (string-split (or (getenv "RR_DISCOVERY_IFACES") "rrtest0")))

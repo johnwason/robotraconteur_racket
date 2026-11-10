@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Minimal example: connect to the test service and use a few members.
 ;;   racket examples/simple.rkt [url]
-(require "../robotraconteur/main.rkt" racket/cmdline)
+(require robotraconteur racket/cmdline)
 
 (define url
   (command-line #:args ([u "rr+tcp://127.0.0.1:22222/?service=test"]) u))

@@ -2,7 +2,7 @@
 ;; rr+wss against the public Robot Raconteur WebSocket test server
 ;; (the same check as robotraconteur/test/extra/tcp_tls/test_ws_https.py).
 ;; Needs internet access; run with ./run_online_tests.sh.
-(require rackunit "../robotraconteur/main.rkt")
+(require rackunit robotraconteur)
 
 (define url (or (getenv "RR_WSS_ONLINE_URL")
                 "rr+wss://wstest2.wasontech.com/robotraconteur?service=testobj"))

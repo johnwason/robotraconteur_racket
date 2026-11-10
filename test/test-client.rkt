@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Integration tests: Racket client against the Python reference service.
 (require rackunit racket/list racket/string
-         "../robotraconteur/main.rkt")
+         robotraconteur)
 
 (define url (or (getenv "RR_TEST_URL")
                 "rr+tcp://127.0.0.1:22222/?service=test"))

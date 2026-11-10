@@ -5,9 +5,27 @@
 A small, pure-Racket Robot Raconteur **client**. It talks to standard Robot
 Raconteur services over `rr+tcp`, `rrs+tcp` (Robot Raconteur node TLS),
 `rr+ws` (WebSocket) or `rr+wss` (WebSocket over standard TLS) using Message
-Version 2. It reads the
-service definitions from the service at connect time, so you don't need
-generated code.
+Version 2. It reads the service definitions from the service at connect
+time, so you don't need generated code. It can also find nodes and services
+on the local network.
+
+## Installation
+
+The package is the `robotraconteur/` directory of this repository:
+
+```sh
+raco pkg install "git+https://github.com/johnwason/robotraconteur_racket?path=robotraconteur"
+```
+
+From a checkout, link it instead so changes take effect directly:
+
+```sh
+raco pkg install --link robotraconteur/
+```
+
+Then `(require robotraconteur)`. The manual is installed with the package;
+open it with `raco docs robotraconteur`. Its source is
+`robotraconteur/scribblings/robotraconteur.scrbl`.
 
 ## Layout
 
@@ -22,7 +40,9 @@ generated code.
 | `robotraconteur/net.rkt`     | TCP connect that races a zoneless IPv6 link-local address over every interface |
 | `robotraconteur/discovery.rkt` | Node and service discovery (IPv6 link-local multicast, libc sockets via the FFI) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
-| `robotraconteur/main.rkt`    | Public module |
+| `robotraconteur/main.rkt`    | Public module, `(require robotraconteur)` |
+| `robotraconteur/info.rkt`    | Package metadata (name, version, license, dependencies, docs) |
+| `robotraconteur/scribblings/` | The manual (Scribble) |
 | `test/`                      | Python reference service and the Racket integration tests |
 | `test/servicetest/`          | Ports of the Robot Raconteur `ServiceTestClient*.py` tests, the test vector reader and the C++ test server harness |
 | `test/data/test_vectors.bin` | Copy of the Robot Raconteur test vector blob (`TEST_VECTORS_FORMAT.md`) |
@@ -34,7 +54,7 @@ generated code.
 ## Usage
 
 ```racket
-(require "robotraconteur/main.rkt")
+(require robotraconteur)
 (define obj (rr-connect "rr+tcp://127.0.0.1:22222/?service=test"))
 ;; or over WebSocket (same server port):
 ;; (rr-connect "rr+ws://127.0.0.1:22222/?service=test")

@@ -11,7 +11,7 @@
 ;;                   critical extension
 ;;
 ;; The full client suite also runs over rrs+tcp (test-client.rkt).
-(require rackunit racket/string "../robotraconteur/main.rkt")
+(require rackunit racket/string robotraconteur)
 
 (define root (getenv "RR_TEST_TLS_ROOT"))
 (define (server var)
