@@ -17,6 +17,8 @@ generated code.
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
 | `examples/simple.rkt`        | Short usage example |
+| `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
+| `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
 
 ## Usage
 
@@ -68,6 +70,21 @@ Racket, and Python `robotraconteur`) if it isn't already built. It then runs
 the Python test service and the Racket tests in one container with
 `--network none`, so all traffic stays on the container's loopback. The full
 suite runs twice, once over `rr+tcp` and once over `rr+ws`.
+
+It then runs interop tests against real services:
+
+- **[Reynard the Robot](https://github.com/robotraconteur/reynard-the-robot)**
+  (`test/test-reynard.rkt`): teleport, drive, arm control, color, the state
+  wire, and remote errors.
+- **A loopback robot built on
+  [AbstractRobot](https://github.com/robotraconteur/robotraconteur_abstract_robot_python)**
+  (`test/loopback_robot.py`, `test/test-robot.rkt`). The driver has no
+  hardware: each joint command becomes the measured position. The test reads
+  `RobotInfo` and the other standard types (25 service definitions pulled
+  from the service) and moves the robot in jog mode, with `execute_trajectory`
+  (a generator of `TrajectoryStatus`), and with the streaming
+  `position_command` wire. It checks each move against the reported joint
+  position.
 
 ## Limitations
 
