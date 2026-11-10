@@ -56,6 +56,10 @@
          rr-pipe-send
          rr-pipe-receive
          rr-pipe-try-receive
+         rr-pipe-endpoint-index
+         rr-pipe-set-request-ack!
+         rr-pipe-add-listener!
+         rr-pipe-add-ack-listener!
          rr-pipe-close
          ;; errors
          (struct-out exn:fail:robotraconteur)
@@ -123,6 +127,7 @@
               callbacks          ; (cons path member) -> proc
               wires              ; (cons path member) -> wire-connection
               pipes              ; (list path member index) -> pipe-endpoint
+              early-pipes        ; (list path member index) -> packets received before connect
               objects            ; path -> rr-object
               dispatch-ch        ; async channel of thunks (event ordering)
               [last-send #:mutable]
@@ -211,6 +216,7 @@
      (define w (hash-ref (conn-wires c) (cons (entry-service-path en) (entry-member-name en)) #f))
      (when w (set-wire-connection-closed?! w #t))]
     [(eq? t 'PipePacket) (dispatch-pipe-packet! c en)]
+    [(eq? t 'PipePacketRet) (dispatch-pipe-acks! c en)]
     [(eq? t 'PipeClosed)
      (define idx (elem-data (find-elem (entry-elements en) "index")))
      (define p (hash-ref (conn-pipes c)
@@ -320,7 +326,7 @@
   (define c (conn in out (make-semaphore 1) (random-bytes 16) nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
-                  (make-hash) (make-async-channel) 0 #f '() (hash) service))
+                  (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
   (with-handlers ([(lambda (e) #t) (lambda (e) (shutdown! c) (raise e))])
     ;; 1. Transport handshake: StreamOp CreateConnection advertising Message V2 only
     (define cc (message (conn-local-nodeid c) (or nodeid (make-bytes 16 0)) 0 0 ""
@@ -838,16 +844,29 @@
 
 ;; --- pipes
 
-(struct pipe-endpoint (obj member ns index queue [next-packet #:mutable] [closed? #:mutable]))
+(struct pipe-endpoint (obj member ns index queue
+                           [next-packet #:mutable] [closed? #:mutable]
+                           [request-ack? #:mutable]
+                           [listeners #:mutable] [ack-listeners #:mutable]))
 (define (rr-pipe-endpoint? x) (pipe-endpoint? x))
+(define (rr-pipe-endpoint-index p) (pipe-endpoint-index p))
 
+;; index -1 lets the service choose the endpoint index
 (define (rr-pipe-connect obj name [index -1])
   (define-values (m ns) (find-member obj name '(pipe)))
+  (define c (rr-object-conn obj))
   (define res (req obj 'PipeConnectReq name (make-elem "index" dt-int32 (vector index))))
   (define idx (vector-ref (elem-data (find-elem (entry-elements res) "index")) 0))
-  (define p (pipe-endpoint obj m ns idx (make-async-channel) 1 #f))
-  (hash-set! (conn-pipes (rr-object-conn obj)) (list (rr-object-path obj) name idx) p)
+  (define key (list (rr-object-path obj) name idx))
+  (define p (pipe-endpoint obj m ns idx (make-async-channel) 1 #f #f '() '()))
+  (hash-set! (conn-pipes c) key p)
+  ;; packets that arrived before PipeConnectRet
+  (for ([v (in-list (reverse (hash-ref (conn-early-pipes c) key '())))])
+    (async-channel-put (pipe-endpoint-queue p) v))
+  (hash-remove! (conn-early-pipes c) key)
   p)
+
+(define max-early-packets 1024)
 
 (define (dispatch-pipe-packet! c en)
   (define path (entry-service-path en))
@@ -855,21 +874,55 @@
   (define acks
     (for*/list ([pe (in-list (entry-elements en))]
                 [idx (in-value (string->number (elem-name pe)))]
-                [p (in-value (hash-ref (conn-pipes c) (list path name idx) #f))]
-                #:when p
+                #:when idx
+                [key (in-value (list path name idx))]
+                [p (in-value (hash-ref (conn-pipes c) key #f))]
+                [o (in-value (hash-ref (conn-objects c) path #f))]
+                #:when (or p o)
                 [ack (in-value
                       (let* ([d (elem-data pe)]
                              [pnum (vector-ref (elem-data (find-elem d "packetnumber")) 0)]
-                             [v (unpack-elem (conn-registry c) (pipe-endpoint-ns p)
-                                             (member-type (pipe-endpoint-member p))
-                                             (find-elem d "packet"))])
-                        (async-channel-put (pipe-endpoint-queue p) v)
+                             [td (if p
+                                     (member-type (pipe-endpoint-member p))
+                                     (let-values ([(m ns) (find-member o name '(pipe))]) (member-type m)))]
+                             [ns (if p (pipe-endpoint-ns p) (rr-object-ns o))]
+                             [v (unpack-elem (conn-registry c) ns td (find-elem d "packet"))])
+                        (cond
+                          [p (async-channel-put (pipe-endpoint-queue p) v)
+                             (for ([l (in-list (pipe-endpoint-listeners p))])
+                               (async-channel-put (conn-dispatch-ch c) (lambda () (l p))))]
+                          [else
+                           (define early (hash-ref (conn-early-pipes c) key '()))
+                           (when (< (length early) max-early-packets)
+                             (hash-set! (conn-early-pipes c) key (cons v early)))])
                         (and (find-elem* d "requestack")
                              (make-elem (elem-name pe) dt-uint32 (vector pnum)))))]
                 #:when ack)
       ack))
   (unless (null? acks)
     (send-entries! c (list (entry 'PipePacketRet path name 0 0 "" acks)))))
+
+;; PipePacketRet: one element per endpoint index holding acknowledged packet numbers
+(define (dispatch-pipe-acks! c en)
+  (for ([e (in-list (entry-elements en))])
+    (define idx (string->number (elem-name e)))
+    (define p (and idx (hash-ref (conn-pipes c)
+                                 (list (entry-service-path en) (entry-member-name en) idx) #f)))
+    (when p
+      (for* ([pnum (in-vector (elem-data e))]
+             [l (in-list (pipe-endpoint-ack-listeners p))])
+        (async-channel-put (conn-dispatch-ch c) (lambda () (l p pnum)))))))
+
+;; When set, sent packets ask the service to acknowledge them.
+(define (rr-pipe-set-request-ack! p on?) (set-pipe-endpoint-request-ack?! p on?))
+
+;; (proc endpoint) is called after each packet is queued for receive
+(define (rr-pipe-add-listener! p proc)
+  (set-pipe-endpoint-listeners! p (append (pipe-endpoint-listeners p) (list proc))))
+
+;; (proc endpoint packet-number) is called when the service acknowledges a packet
+(define (rr-pipe-add-ack-listener! p proc)
+  (set-pipe-endpoint-ack-listeners! p (append (pipe-endpoint-ack-listeners p) (list proc))))
 
 ;; Returns the packet number of the sent packet.
 (define (rr-pipe-send p v)
@@ -881,9 +934,13 @@
    (rr-object-conn obj)
    (list (entry 'PipePacket (rr-object-path obj) (member-name m) 0 0 ""
                 (list (make-elem (number->string (pipe-endpoint-index p)) dt-dictionary
-                                 (list (make-elem "packetnumber" dt-uint32 (vector pnum))
-                                       (pack-elem (reg-of obj) (pipe-endpoint-ns p) "packet"
-                                                  (member-type m) v)))))))
+                                 (append
+                                  (list (make-elem "packetnumber" dt-uint32 (vector pnum))
+                                        (pack-elem (reg-of obj) (pipe-endpoint-ns p) "packet"
+                                                   (member-type m) v))
+                                  (if (pipe-endpoint-request-ack? p)
+                                      (list (make-elem "requestack" dt-uint32 (vector 1)))
+                                      '())))))))
   pnum)
 
 ;; Blocks up to timeout seconds; returns eof when the pipe is closed.
