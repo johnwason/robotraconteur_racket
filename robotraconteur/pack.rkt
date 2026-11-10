@@ -218,9 +218,21 @@
 
 ;; --- pods
 
-(define (pod-elems-of v)
-  (cond [(rr-struct? v) (vector v)]
+;; Pod and namedarray fields are flat on the wire. A field value is a scalar,
+;; a vector ("T[N]", "T[N-]") or an rr-multidim ("T[M,N]", column major).
+(define (field-items td v)
+  (cond [(rr-multidim? v) (->vector (rr-multidim-array v))]
+        [(or (rr-struct? v) (number? v) (boolean? v)) (vector v)]
         [else (->vector v)]))
+
+(define (field-value td items)
+  (case (typedef-array td)
+    [(#f) (vector-ref items 0)]
+    [(array) items]
+    [(multidim) (rr-multidim (typedef-dims td) items)]))
+
+(define (field-count td)
+  (if (typedef-array td) (vector-product (typedef-dims td)) 1))
 
 (define (pack-pod-array reg qname def items)
   (define ns (qualified-ns qname))
@@ -237,14 +249,13 @@
   (define base (typedef-base td))
   (cond
     [(numeric-primitive? base)
-     (elem (member-name m) (prim->dt base) "" ""
-           (if (typedef-array td) (->vector v) (vector v)))]
+     (elem (member-name m) (prim->dt base) "" "" (field-items td v))]
     [else
      (define-values (qname kind def) (resolve-type reg ns base))
      (case kind
-       [(pod) (let-values ([(t tn d) (pack-pod-array reg qname def (pod-elems-of v))])
+       [(pod) (let-values ([(t tn d) (pack-pod-array reg qname def (field-items td v))])
                 (elem (member-name m) t tn "" d))]
-       [(namedarray) (let-values ([(t tn d) (pack-namedarray-array reg qname def (pod-elems-of v))])
+       [(namedarray) (let-values ([(t tn d) (pack-namedarray-array reg qname def (field-items td v))])
                        (elem (member-name m) t tn "" d))]
        [(enum) (elem (member-name m) dt-int32 "" "" (vector (enum-value def v)))]
        [else (error 'robotraconteur "invalid pod field type ~a" qname)])]))
@@ -269,7 +280,7 @@
   (for/fold ([prim #f] [count 0]) ([m (in-list (entrydef-members def))]
                                    #:when (eq? (member-kind m) 'field))
     (define td (member-type m))
-    (define n (if (typedef-array td) (car (typedef-dims td)) 1))
+    (define n (field-count td))
     (cond
       [(numeric-primitive? (typedef-base td)) (values (typedef-base td) (+ count n))]
       [else
@@ -284,14 +295,10 @@
     (define v (hash-ref (rr-struct-fields s) (member-name m)))
     (cond
       [(numeric-primitive? (typedef-base td))
-       (if (typedef-array td)
-           (for ([x (in-vector (->vector v))]) (set-box! out (cons x (unbox out))))
-           (set-box! out (cons v (unbox out))))]
+       (for ([x (in-vector (field-items td v))]) (set-box! out (cons x (unbox out))))]
       [else
        (define-values (q2 k2 d2) (resolve-type reg ns (typedef-base td)))
-       (if (typedef-array td)
-           (for ([x (in-vector (->vector v))]) (namedarray->flat reg q2 d2 x out))
-           (namedarray->flat reg q2 d2 v out))])))
+       (for ([x (in-vector (field-items td v))]) (namedarray->flat reg q2 d2 x out))])))
 
 (define (pack-namedarray-array reg qname def items)
   (define-values (prim count) (namedarray-layout reg qname def))
@@ -417,16 +424,15 @@
       (define td (member-type m))
       (define fe (find-elem fields (member-name m)))
       (define v
-        (cond
-          [(numeric-dt? (elem-type fe))
-           (if (typedef-array td) (elem-data fe) (vector-ref (elem-data fe) 0))]
-          [(= (elem-type fe) dt-pod-array)
-           (define items (unpack-pod-array reg (elem-type-name fe) (elem-data fe)))
-           (if (typedef-array td) items (vector-ref items 0))]
-          [(= (elem-type fe) dt-namedarray-array)
-           (define items (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe)))
-           (if (typedef-array td) items (vector-ref items 0))]
-          [else (error 'robotraconteur "invalid pod field")]))
+        (field-value
+         td
+         (cond
+           [(numeric-dt? (elem-type fe)) (elem-data fe)]
+           [(= (elem-type fe) dt-pod-array)
+            (unpack-pod-array reg (elem-type-name fe) (elem-data fe))]
+           [(= (elem-type fe) dt-namedarray-array)
+            (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe))]
+           [else (error 'robotraconteur "invalid pod field ~a" (member-name m))])))
       (hash-set! h (member-name m) v))
     (rr-struct q h)))
 
@@ -437,14 +443,13 @@
   (define h (make-hash))
   (for ([m (in-list (field-members def))])
     (define td (member-type m))
-    (define n (if (typedef-array td) (car (typedef-dims td)) #f))
     (define (one)
       (if (numeric-primitive? (typedef-base td))
           (next!)
           (let-values ([(q2 k2 d2) (resolve-type reg ns (typedef-base td))])
             (flat->namedarray reg q2 d2 flat pos))))
     (hash-set! h (member-name m)
-               (if n (for/vector ([i (in-range n)]) (one)) (one))))
+               (field-value td (for/vector ([i (in-range (field-count td))]) (one)))))
   (rr-struct qname h))
 
 (define (unpack-namedarray-array reg qname elems)
@@ -490,7 +495,11 @@
                        (vector)
                        (for/vector ([i (in-range (car (typedef-dims td)))])
                          (new-structure reg q)))]
-          [else 'null])]
+          [(multidim) (if (typedef-varlen? td)
+                          (rr-multidim '(0) (vector))
+                          (rr-multidim (typedef-dims td)
+                                       (for/vector ([i (in-range (vector-product (typedef-dims td)))])
+                                         (new-structure reg q))))])]
        [else 'null])]))
 
 (define (new-structure reg qname)

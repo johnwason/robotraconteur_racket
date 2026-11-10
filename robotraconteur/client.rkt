@@ -22,6 +22,8 @@
          rr-set-callback!
          rr-new-structure
          rr-enum-values
+         rr-pack-element
+         rr-unpack-element
          ;; locks
          rr-request-object-lock
          rr-release-object-lock
@@ -397,6 +399,15 @@
   (define o obj)
   (define-values (q kind def) (resolve-type (conn-registry (rr-object-conn o)) (rr-object-ns o) type))
   (new-structure (conn-registry (rr-object-conn o)) q))
+
+;; Pack a value of a robdef type (e.g. "com.example.mytype[]") into a message
+;; element, and back, using the connection's service definitions. These are the
+;; conversions used on the wire (like PackMessageElement in the Python library).
+(define (rr-pack-element obj type v [name "value"])
+  (pack-elem (conn-registry (rr-object-conn obj)) (rr-object-ns obj) name (parse-type type) v))
+
+(define (rr-unpack-element obj type e)
+  (unpack-elem (conn-registry (rr-object-conn obj)) (rr-object-ns obj) (parse-type type) e))
 
 ;; Enum values as a list of (name . integer), name a string.
 ;; type may be qualified or relative to the object's service definition.
