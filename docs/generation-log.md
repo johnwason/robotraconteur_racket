@@ -124,8 +124,9 @@ after pull request #3.
 | AskUserQuestion | 1 | a question when the user planned to switch computers |
 
 Within the shell calls: 122 `podman run` invocations, 8 image builds, 30 runs
-of the full test script, 41 targeted `raco test` runs, and 30 `git commit`
-commands.
+of the full test script, 41 targeted `raco test` runs, and 30 shell calls that
+made commits. Eight of those made more than one commit (one made four), giving
+the 40 commits by the model.
 
 **Tokens**
 
