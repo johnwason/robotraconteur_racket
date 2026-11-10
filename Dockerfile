@@ -35,3 +35,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # real network.
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Native libraries for racket/draw (bitmaps, PNG/JPEG) and racket/gui (windows)
+# used by the camera examples; Xvfb gives the GUI path a virtual display in tests.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libfontconfig1 \
+        libjpeg-turbo8 libpng16-16t64 libgtk-3-0t64 xvfb xauth \
+    && rm -rf /var/lib/apt/lists/*
