@@ -43,7 +43,8 @@ stated during the work, not a full record of the model's internal process.
 commit messages and pull request descriptions. It ran every build and test
 itself, through the shell, in podman containers. The user steered the work:
 several prompts set the direction or caught real problems, listed under
-"Decisive user interventions" below. The user also gave permissions (the
+"Decisive user interventions" below. The user also spot-checked the work at
+key points (see "Spot checks by the user" below), gave permissions (the
 GitHub repository and token, access to the simulator), merged the pull
 requests, registered the package on pkgs.racket-lang.org, ran examples on
 their own machine, reported the core bugs upstream, and edited this log.
@@ -89,6 +90,36 @@ implementations.
 - **Requiring the AI disclosure in the README and manual** (phase 12).
 - **"Keep a clean git history so we can rewind, and iterate your design"**
   (phase 4), which set the one-commit-per-step practice used throughout.
+
+## Spot checks by the user
+
+The user spot-checked the work at key points during the session, not
+line by line across the whole codebase. The transcript records which files
+were open in the editor when prompts were sent, which shows where the user
+looked:
+
+- **The first client:** `test/test-client.rkt` and `examples/simple.rkt`,
+  before asking how it was written so fast and asking for a repository.
+- **The robot interop tests:** `test/test-robot.rkt`.
+- **The ServiceTest port:** `test/servicetest/test-servicetest1.rkt`.
+- **Link-local addressing:** `robotraconteur/discovery.rkt` was open and the
+  zone-handling code in `robotraconteur/client.rkt` selected just before the
+  question about zone IDs, which led to the zone racing.
+- **Connecting:** `robotraconteur/net.rkt` was open just before the question
+  about the TCP timeout, which led to the connect timeouts.
+- **CI, the README and the examples:** the CI workflow, the README (the AI
+  note, the logo and the Quick Start), and the camera and Reynard examples.
+
+The user also checked the work by running it:
+
+- **The camera examples** were run on the user's own machine against the
+  simulator. Saving frames worked; the `--show` window crashed on that
+  machine's VM image, which the user judged to be an environment issue.
+- **The published package:** after registering it, the user checked the
+  package page as it populated.
+
+The editor events show which files were open, not how closely they were
+read.
 
 ## Session statistics
 
@@ -438,6 +469,7 @@ On timeout, a custodian shutdown closes everything opened. A test server that ac
 - **Mutation checks:** for security and robustness code (certificate rules, timeouts, zone racing), each protection was removed on a scratch copy to confirm the matching test fails.
 - **Read state back instead of trusting exit codes:** robot joints sampled during motion, camera colors inspected, Reynard's position read after the quick start.
 - **Full offline suite before each push, and CI on each pull request.**
+- **Spot checks by the user** at key points, described above.
 
 ## Boundaries kept
 
