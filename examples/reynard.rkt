@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Racket port of reynard-the-robot/examples/reynard_robotraconteur_client.py
 ;;   racket examples/reynard.rkt [url]
-(require "../robotraconteur/main.rkt" racket/cmdline racket/math)
+(require robotraconteur racket/cmdline racket/math)
 
 (define url
   (command-line #:args ([u "rr+tcp://localhost:29200?service=reynard"]) u))

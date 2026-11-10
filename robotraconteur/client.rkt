@@ -8,6 +8,7 @@
 (provide rr-connect
          rr-make-ssl-context
          rr-make-node-tls-context
+         rr-node-tls-context?
          rr-close
          rr-object?
          rr-object-path

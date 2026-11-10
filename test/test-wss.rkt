@@ -7,7 +7,7 @@
 ;; The full client suite also runs over rr+wss (test-client.rkt with
 ;; RR_TEST_URL=rr+wss://localhost:...); this file checks that the default
 ;; context really verifies the certificate chain and the hostname.
-(require rackunit "../robotraconteur/main.rkt")
+(require rackunit robotraconteur)
 
 (define port (or (getenv "RR_WSS_PORT") "22443"))
 (define ca (getenv "RR_TEST_CA"))

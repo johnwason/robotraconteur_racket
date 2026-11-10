@@ -42,7 +42,7 @@
 (define-ssl SSL_CTX_new (_fun _pointer -> _pointer))
 (define-ssl SSL_CTX_free (_fun _pointer -> _void))
 (define-ssl SSL_CTX_ctrl (_fun _pointer _int _long _pointer -> _long))
-(define-ssl SSL_CTX_set_verify (_fun _pointer _int _verify-cb -> _void))
+(define-ssl SSL_CTX_set_verify (_fun _pointer _int _fpointer -> _void))
 (define-ssl SSL_CTX_get_cert_store (_fun _pointer -> _pointer))
 (define-ssl SSL_new (_fun _pointer -> _pointer))
 (define-ssl SSL_free (_fun _pointer -> _void))
@@ -128,6 +128,7 @@
             [(equal? oid expected-oid) (loop (add1 i) #t)]
             [else #f])])])))
 
+;; Converted to a C callback once, below: every context shares that pointer.
 (define (verify-callback preverified store-ctx)
   ;; must not raise into OpenSSL
   (with-handlers ([(lambda (e) #t) (lambda (e) 0)])
@@ -142,6 +143,13 @@
        (define expected
          (string-append rr-oid (cond [root? ".1"] [(zero? depth) ".3"] [else ".2"])))
        (if (rr-extensions-ok? cert expected) 1 0)])))
+
+;; The C callback for verify-callback, made once and kept for the life of the
+;; module. Passing the Racket procedure to SSL_CTX_set_verify directly would
+;; make a new callback per call; the FFI keeps only the latest one alive for a
+;; given procedure, so an earlier context's callback could be collected while
+;; OpenSSL still used it (a crash once a second context existed).
+(define verify-callback-ptr (function-ptr verify-callback _verify-cb))
 
 ;; --- contexts
 
@@ -171,7 +179,7 @@
   (define ctx (SSL_CTX_new (TLS_client_method)))
   (unless ctx (error 'rr-make-node-tls-context "SSL_CTX_new failed"))
   (SSL_CTX_ctrl ctx SSL_CTRL_SET_MIN_PROTO_VERSION TLS1_2_VERSION #f)
-  (SSL_CTX_set_verify ctx SSL_VERIFY_PEER verify-callback)
+  (SSL_CTX_set_verify ctx SSL_VERIFY_PEER verify-callback-ptr)
   (define store (SSL_CTX_get_cert_store ctx))
   (when default-roots?
     (for* ([pem (in-list robotraconteur-root-certificates)]

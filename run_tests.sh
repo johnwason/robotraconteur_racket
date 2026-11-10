@@ -32,11 +32,21 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   -e RR_REQUIRE_CPP_SERVER="${RR_REQUIRE_CPP_SERVER:-0}" \
   -e RR_REQUIRE_DISCOVERY="${RR_REQUIRE_DISCOVERY:-0}" "$IMAGE" sh -c '
   set -e
-  raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
+  status=0
+  # install the package linked to this checkout, as users get it with
+  # raco pkg install; this also builds the manual and checks dependencies
+  echo "==== package: install, docs, dependency check ===="
+  raco pkg install --link --no-setup --deps fail robotraconteur/ > /dev/null
+  if raco setup --check-pkg-deps --pkgs robotraconteur > /tmp/setup.log 2>&1 &&
+     ! grep -q "missing dependency\|summary of errors" /tmp/setup.log; then
+    echo "package and documentation built"
+  else
+    grep -v "skipping:" /tmp/setup.log | tail -30; status=1
+  fi
+  raco make test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
             test/test-timeouts.rkt \
             test/servicetest/*.rkt
-  status=0
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
     cat $1; return 1

@@ -10,7 +10,7 @@
 ;;
 ;; RR_ZONE_ADDR  fe80:: address of RR_ZONE_GOOD
 ;; RR_ZONE_PORT  port of a plain test service (rr+tcp and rr+ws)
-(require rackunit racket/tcp "../robotraconteur/main.rkt" "../robotraconteur/net.rkt")
+(require rackunit racket/tcp robotraconteur robotraconteur/net)
 
 (define addr (getenv "RR_ZONE_ADDR"))
 (define port (getenv "RR_ZONE_PORT"))

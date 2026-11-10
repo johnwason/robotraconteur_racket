@@ -2,7 +2,7 @@
 ;; Port of robotraconteur/test/python/RobotRaconteurTest/ServiceTestClient3.py
 ;; Service: RobotRaconteurTestService3 (com.robotraconteur.testing.TestService5)
 (require rackunit
-         "../../robotraconteur/main.rkt" "test-server.rkt" "util.rkt")
+         robotraconteur "test-server.rkt" "util.rkt")
 
 (define (with-client f)
   (define r (rr-connect (test-server-url "RobotRaconteurTestService3")))

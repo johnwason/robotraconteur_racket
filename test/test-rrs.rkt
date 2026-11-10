@@ -11,7 +11,7 @@
 ;;                   critical extension
 ;;
 ;; The full client suite also runs over rrs+tcp (test-client.rkt).
-(require rackunit racket/string "../robotraconteur/main.rkt")
+(require rackunit racket/string robotraconteur)
 
 (define root (getenv "RR_TEST_TLS_ROOT"))
 (define (server var)
@@ -67,3 +67,14 @@
   (check-exn exn:fail?
              (lambda ()
                (rr-close (rr-connect (format "rr+tcp://127.0.0.1:~a/?service=test" good-port))))))
+
+(test-case "contexts stay valid after more are made and memory is collected"
+  ;; regression: each context used to get its own C callback, and only the
+  ;; latest one was kept alive, so older contexts crashed after a collection
+  (define first-ctx (rr-make-node-tls-context #:extra-roots (list root)))
+  (for ([i 5]) (rr-make-node-tls-context #:extra-roots (list root)))
+  (for ([i 3]) (collect-garbage 'major))
+  (check-equal? (connect-ok? (url good-port) first-ctx) "experimental.racket_test.TestObject")
+  (define-values (port id) (server "RR_RRS_NOOID"))
+  (check-exn (fails-with #rx"certificate verify failed")
+             (lambda () (connect-ok? (url port) first-ctx))))
