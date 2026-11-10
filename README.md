@@ -198,8 +198,8 @@ on `localhost`; pass another URL as the last argument, quoted because of the `?`
 | `camera/camera-image-preview.rkt` | Live preview stream (`preview_stream` pipe, MJPEG) |
 
 ```sh
-racket examples/standard_devices/robot/robot-trajectory.rkt ur 'rr+tcp://192.168.1.231:52511?service=robot'
-racket examples/standard_devices/camera/camera-image-preview.rkt --show 'rr+tcp://192.168.1.231:59823?service=camera'
+racket examples/standard_devices/robot/robot-trajectory.rkt ur 'rr+tcp://localhost:52511?service=robot'
+racket examples/standard_devices/camera/camera-image-preview.rkt --show 'rr+tcp://localhost:59823?service=camera'
 ```
 
 The jog and position examples run until interrupted, or for `--duration`
