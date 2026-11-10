@@ -20,13 +20,87 @@ stated during the work, not a full record of the model's internal process.
 
 | | |
 |---|---|
-| Time | a few hours of active work |
+| Time | about 3.5 hours of active work (see the statistics below) |
 | First working client | minutes after the first prompt (commit `06e21ca`) |
 | Result | 3,245 lines of Racket in the library (`robotraconteur/`), about 2,900 lines of tests, a Scribble manual, examples, CI |
 | Transports | `rr+tcp`, `rr+ws`, `rr+wss`, `rrs+tcp` (Robot Raconteur node TLS), plus IPv6 discovery |
 | History | 43 commits, 3 pull requests, all merged |
 | Tests | about 164 tests across 12 stages, run in podman, with no network access except to the simulator and the public `rr+wss` test server when explicitly allowed |
 | Published | `robotraconteur` on pkgs.racket-lang.org |
+
+## The AI
+
+| | |
+|---|---|
+| Model | Claude Opus 5.5 (`claude-opus-5-5`), by Anthropic; training data up to June 2026 |
+| Harness | Claude Code, running in the VS Code extension on a Linux workstation |
+| Tools the model could use | a shell (`Bash`), file reading and editing (`Read`, `Write`, `Edit`), web fetch and search, asking the user a question, and stopping background tasks |
+| Agents | one agent throughout; no subagents were used |
+| Context | the conversation was automatically compacted into a summary once, after the ServiceTest port (end of phase 4) |
+| Safety | tool calls ran under Claude Code's permission system; one command (an `rm -rf` inside a container script) was blocked by its safety check |
+
+**Who did what.** The model wrote all the code, tests, documentation,
+commit messages and pull request descriptions. It ran every build and test
+itself, through the shell, in podman containers. The user gave the
+direction and permissions (prompts, the GitHub repository and token, access
+to the simulator), merged the pull requests, registered the package on
+pkgs.racket-lang.org, ran examples on their own machine, reported the core
+bugs upstream, and edited this log.
+
+## Session statistics
+
+Counted from the session transcript and the repository. The interaction
+figures cover the whole session, including writing this log; the repository
+figures are for `main` after pull request #3.
+
+**Interaction**
+
+| | |
+|---|---|
+| User prompts | 62 (including this log's requests); 2 interrupted the work in progress |
+| Model responses | 520 |
+| Active work | about 3.5 hours: the time spent responding, counting gaps of less than 10 minutes between events |
+| Questions the model asked the user | one through the question tool; confirmations were also given in text before the ServiceTest work, as requested |
+
+**Tool calls: 519**
+
+| Tool | Calls | Used for |
+|---|---|---|
+| Bash | 437 | builds, tests, git, podman, editing files with scripts |
+| Write | 56 | new files |
+| Edit | 8 | small in-place changes |
+| Read | 7 | reading files and images (camera frames) |
+| TaskStop | 4 | stopping hung or stale background runs |
+| ToolSearch | 3 | loading tools |
+| WebFetch | 2 | checking the package page |
+| WebSearch | 1 | looking for an existing loopback robot driver (phase 3) |
+| AskUserQuestion | 1 | a question when the user planned to switch computers |
+
+Within the shell calls: 122 `podman run` invocations, 8 image builds, 30 runs
+of the full test script, 41 targeted `raco test` runs, and 31 `git commit`
+commands.
+
+**Tokens**
+
+| | |
+|---|---|
+| Output | about 565,000 |
+| Input | about 170.5 million, almost all cache reads (169.5 million), plus 1.0 million cache writes and about 1,200 uncached |
+
+The input is large because every response re-reads the whole conversation,
+including long tool outputs; caching keeps most of that cheap.
+
+**Result**
+
+| | |
+|---|---|
+| Files | 68 tracked |
+| Racket | 6,362 lines: 3,245 in the library, the rest tests and examples |
+| Other | 2,438 lines of Python, shell, Scribble, Markdown, CI and Dockerfile |
+| Commits | 43: 40 by the model, 3 pull request merges by the user |
+| Pull requests | 3 merged |
+| CI runs | 8, all passed |
+| Tests | about 164, in 12 stages |
 
 ## Ground rules given at the start
 
