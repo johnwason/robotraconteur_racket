@@ -55,7 +55,9 @@ open it with `raco docs robotraconteur`. Its source is
 | `build_cpp_test_server.sh`   | Builds the Robot Raconteur C++ test server inside the container |
 | `examples/simple.rkt`        | Short usage example |
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
+| `examples/standard_devices/`  | Ports of the core's standard device examples (robot and camera clients) |
 | `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
+| `test/loopback_camera.py`    | Loopback camera with synthetic frames (standard `com.robotraconteur.imaging.Camera`) |
 
 ## Usage
 
@@ -120,6 +122,39 @@ Remote errors are raised as `exn:fail:robotraconteur`, with the fields
 service-defined exception name), `error-message`, `error-subname` and
 `error-param`. `(rr-error-type e)` gives the code as a symbol, such as
 `'ObjectLockedError`.
+
+## Standard device examples
+
+`examples/standard_devices/` ports the core repository's
+`examples/standard_devices` Python clients. Like the originals, they default to
+the [training simulator](https://github.com/robotraconteur-contrib/robotraconteur_training_sim)
+on `localhost`; pass another URL as the last argument, quoted because of the `?`:
+
+| Example | Does |
+|---|---|
+| `robot/robot-jog-freespace.rkt` | Jog mode: moves joint 0 in a slow sine wave with `jog_freespace` |
+| `robot/robot-position-command.rkt` | Position-command mode: streams `RobotJointCommand`s on the `position_command` wire |
+| `robot/robot-trajectory.rkt abb\|ur` | Trajectory mode: runs `execute_trajectory`, then two queued trajectories |
+| `camera/camera-capture-frame.rkt` | Captures one raw frame |
+| `camera/camera-capture-frame-compressed.rkt` | Captures one compressed frame (JPEG or PNG) |
+| `camera/camera-image.rkt` | Live full-quality stream (`frame_stream` pipe) |
+| `camera/camera-image-preview.rkt` | Live preview stream (`preview_stream` pipe, MJPEG) |
+
+```sh
+racket examples/standard_devices/robot/robot-trajectory.rkt ur 'rr+tcp://192.168.1.231:52511?service=robot'
+racket examples/standard_devices/camera/camera-image-preview.rkt --show 'rr+tcp://192.168.1.231:59823?service=camera'
+```
+
+The jog and position examples run until interrupted, or for `--duration`
+seconds. The camera examples save PNG files by default (`--output` names the
+file); `--show` displays the images in a window instead (`racket/gui`, needs a
+display). `camera/camera-util.rkt` converts standard `Image` and
+`CompressedImage` structures to `racket/draw` bitmaps (raw `rgb888`, `bgr888`,
+`rgba8888`, `bgra8888` and `mono8`), in place of `ImageUtil` from the Python
+companion library.
+
+All seven were run against the training simulator's 2ur5e scene: the robots
+move as in the Python versions and the frames match the camera's own JPEG.
 
 ## Tests
 
@@ -201,6 +236,13 @@ It then runs interop tests against real services:
   (a generator of `TrajectoryStatus`), and with the streaming
   `position_command` wire. It checks each move against the reported joint
   position.
+- **The standard device examples** (`test/test-device-examples.rkt`), run as
+  programs against a loopback robot and a loopback camera
+  (`test/loopback_camera.py`). The camera serves 96x48 frames that are red,
+  green and blue in thirds, which catches swapped colour channels. The test
+  checks the robot's motion, the trajectory status sequence, the saved
+  frames' size and colours, every supported raw encoding, and the `--show`
+  window path on a virtual display (Xvfb).
 
 ### ServiceTest ports against the C++ test server
 
