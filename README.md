@@ -1,5 +1,9 @@
 # Robot Raconteur client for Racket (experimental)
 
+> **This is an AI generation experiment.** The library, its tests and its
+> documentation were written by Claude (Anthropic's Claude Opus 5.5, using
+> Claude Code), at the direction of John Wason.
+
 [![CI](https://github.com/johnwason/robotraconteur_racket/actions/workflows/ci.yml/badge.svg)](https://github.com/johnwason/robotraconteur_racket/actions/workflows/ci.yml)
 
 A small, pure-Racket Robot Raconteur **client**. It talks to standard Robot

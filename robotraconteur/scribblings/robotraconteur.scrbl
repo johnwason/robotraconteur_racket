@@ -4,6 +4,10 @@
 @title{Robot Raconteur Client}
 @author{John Wason}
 
+@nested[#:style 'inset]{@bold{This is an AI generation experiment.} The
+library, its tests and this documentation were written by Claude (Anthropic's
+Claude Opus 5.5, using Claude Code), at the direction of John Wason.}
+
 @defmodule[robotraconteur]
 
 A pure-Racket client for @hyperlink["https://github.com/robotraconteur/robotraconteur"]{Robot
