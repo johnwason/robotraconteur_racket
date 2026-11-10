@@ -46,6 +46,7 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   raco make test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
             test/test-timeouts.rkt test/test-device-examples.rkt test/test-discovery-examples.rkt \
+            test/test-quickstart.rkt \
             test/servicetest/*.rkt
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
@@ -179,8 +180,11 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
     echo "==== interop: $name ===="
     raco test $test || status=1
     kill $pid 2>/dev/null || true
+    # let it exit and free its ports before the next service starts
+    wait $pid 2>/dev/null || true
   }
-  run_interop reynard 29200 test/test-reynard.rkt python3 -m reynard_the_robot --quiet
+  # Reynard: the interop tests and the README quick start client
+  run_interop reynard 29200 "test/test-reynard.rkt test/test-quickstart.rkt" python3 -m reynard_the_robot --quiet
   run_interop loopback-robot 59926 test/test-robot.rkt python3 test/loopback_robot.py 59926
 
   # standard device examples (examples/standard_devices) run as programs

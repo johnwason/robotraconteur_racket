@@ -15,6 +15,61 @@ Version 2. It reads the service definitions from the service at connect
 time, so you don't need generated code. It can also find nodes and services
 on the local network.
 
+## Quick Start
+
+The Quick Start connects to a device from Racket and calls its functions. The
+device is "Reynard the Robot", a simple cartoon robot from a Python package
+that runs a standard Robot Raconteur service.
+
+Install Racket (from [racket-lang.org](https://download.racket-lang.org) or
+your package manager), this library, and Reynard:
+
+```bash
+raco pkg install "git+https://github.com/johnwason/robotraconteur_racket?path=robotraconteur"
+python -m pip install reynard-the-robot
+```
+
+On Linux, use `python3` instead of `python`.
+
+Start Reynard, and open a browser to [http://localhost:29201](http://localhost:29201)
+to see it:
+
+```bash
+python -m reynard_the_robot
+```
+
+The Racket client only needs to connect: it reads the service definition
+from the service, so there is nothing to generate or declare.
+
+[`examples/quickstart/reynard-quickstart-client.rkt`](examples/quickstart/reynard-quickstart-client.rkt)
+
+```racket
+#lang racket/base
+(require robotraconteur)
+
+;; Connect to the service
+(define obj (rr-connect "rr+tcp://localhost:29200?service=reynard"))
+
+;; Call the say function
+(rr-call obj "say" "Hello from Racket!")
+
+;; Call the teleport function (meters)
+(rr-call obj "teleport" 0.1 -0.2)
+
+(rr-close obj)
+```
+
+Run it, and Reynard says hello and jumps to the new position:
+
+```bash
+racket examples/quickstart/reynard-quickstart-client.rkt
+```
+
+Properties work the same way with `rr-get` and `rr-set!`; see [Usage](#usage)
+for the rest of the API, [examples/reynard.rkt](examples/reynard.rkt) for a
+fuller Reynard client, and [Discovery examples](#discovery-examples) to find
+Reynard on the network instead of naming its address.
+
 ## Installation
 
 The package is the `robotraconteur/` directory of this repository:
@@ -53,6 +108,7 @@ open it with `raco docs robotraconteur`. Its source is
 | `test/servicetest/`          | Ports of the Robot Raconteur `ServiceTestClient*.py` tests, the test vector reader and the C++ test server harness |
 | `test/data/test_vectors.bin` | Copy of the Robot Raconteur test vector blob (`TEST_VECTORS_FORMAT.md`) |
 | `build_cpp_test_server.sh`   | Builds the Robot Raconteur C++ test server inside the container |
+| `examples/quickstart/`       | The Quick Start client (Reynard the Robot) |
 | `examples/simple.rkt`        | Short usage example |
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
 | `examples/standard_devices/`  | Ports of the core's standard device examples (robot and camera clients) |
