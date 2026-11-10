@@ -33,7 +33,8 @@
          ;; helpers
          make-entry make-elem find-elem find-elem* elem-value
          entry-type-code entry-type-name
-         message-error-code)
+         message-error-code
+         message-error-symbol)
 
 ;; ---------------------------------------------------------------------------
 ;; Data type codes
@@ -154,6 +155,12 @@
     (ValueNotSet . 106) (AbortOperation . 107) (OperationAborted . 108)
     (StopIteration . 109) (OperationTimeout . 110) (OperationCancelled . 111)
     (AuthenticationError . 150) (ObjectLockedError . 151) (PermissionDenied . 152)))
+
+(define code->message-error
+  (for/hasheqv ([p (in-list message-error-codes)]) (values (cdr p) (car p))))
+
+;; Error code -> symbol such as 'InvalidOperation (or the integer if unknown)
+(define (message-error-symbol code) (hash-ref code->message-error code code))
 
 (define (message-error-code sym)
   (cond [(assq sym message-error-codes) => cdr]

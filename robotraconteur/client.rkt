@@ -46,6 +46,7 @@
          rr-pipe-close
          ;; errors
          (struct-out exn:fail:robotraconteur)
+         rr-error-type
          ;; values
          (struct-out rr-struct)
          (struct-out rr-multidim)
@@ -58,19 +59,38 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Errors
+;;
+;; error-code    MessageErrorType code (rr-error-type gives it as a symbol)
+;; error-name    e.g. "RobotRaconteur.InvalidOperation" or a service-defined
+;;               exception such as "com.example.service.my_exception"
+;; error-message the remote error string
+;; error-subname optional sub-name ("" when absent)
+;; error-param   optional varvalue parameter ('null when absent)
 
-(struct exn:fail:robotraconteur exn:fail (error-code error-name) #:transparent)
+(struct exn:fail:robotraconteur exn:fail
+  (error-code error-name error-message error-subname error-param)
+  #:transparent)
+
+(define (make-rr-exn code name msg [subname ""] [param 'null])
+  (exn:fail:robotraconteur (format "~a: ~a" name msg) (current-continuation-marks)
+                           code name msg subname param))
 
 (define (raise-rr-error code name msg)
-  (raise (exn:fail:robotraconteur (format "~a: ~a" name msg)
-                                  (current-continuation-marks) code name)))
+  (raise (make-rr-exn code name msg)))
 
-(define (entry->exn en)
+;; Error type as a symbol, e.g. 'InvalidOperation, 'ObjectLockedError, 'RemoteError
+(define (rr-error-type e) (message-error-symbol (exn:fail:robotraconteur-error-code e)))
+
+(define (entry->exn c en)
   (define els (entry-elements en))
   (define (s nm) (let ([e (find-elem* els nm)]) (if e (elem-data e) "")))
-  (exn:fail:robotraconteur (format "~a: ~a" (s "errorname") (s "errorstring"))
-                           (current-continuation-marks)
-                           (entry-error en) (s "errorname")))
+  (define param-e (find-elem* els "errorparam"))
+  (define param
+    (if param-e
+        (with-handlers ([exn:fail? (lambda (_) 'null)])
+          (unpack-elem (conn-registry c) "" #f param-e))
+        'null))
+  (make-rr-exn (entry-error en) (s "errorname") (s "errorstring") (s "errorsubname") param))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection state
@@ -143,7 +163,7 @@
      (cond
        [(not res) (raise-rr-error 101 "RobotRaconteur.RequestTimeout" "request timed out")]
        [(eq? res 'closed) (raise-rr-error 1 "RobotRaconteur.ConnectionError" "connection closed")]
-       [(not (zero? (entry-error res))) (raise (entry->exn res))]
+       [(not (zero? (entry-error res))) (raise (entry->exn c res))]
        [else res]))
    (lambda ()
      (call-with-semaphore (conn-pending-lock c)
@@ -300,7 +320,7 @@
     (define ren (car (message-entries ret)))
     (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
       (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected handshake response"))
-    (unless (memv (entry-error ren) '(0 2)) (raise (entry->exn ren)))
+    (unless (memv (entry-error ren) '(0 2)) (raise (entry->exn c ren)))
     (set-conn-remote-nodeid! c (message-sender-nodeid ret))
     (set-conn-remote-nodename! c (message-sender-nodename ret))
     ;; start background threads
@@ -567,10 +587,18 @@
   (define reply
     (with-handlers ([exn:fail?
                      (lambda (e)
-                       (entry 'CallbackCallRet path name (entry-request-id en)
-                              (message-error-code 'RemoteError) ""
-                              (list (make-elem "errorname" dt-string "RobotRaconteur.OperationFailed")
-                                    (make-elem "errorstring" dt-string (exn-message e)))))])
+                       ;; Robot Raconteur errors keep their type; anything else
+                       ;; is reported as a remote OperationFailed
+                       (define-values (code ename msg)
+                         (if (exn:fail:robotraconteur? e)
+                             (values (exn:fail:robotraconteur-error-code e)
+                                     (exn:fail:robotraconteur-error-name e)
+                                     (exn:fail:robotraconteur-error-message e))
+                             (values (message-error-code 'RemoteError)
+                                     "RobotRaconteur.OperationFailed" (exn-message e))))
+                       (entry 'CallbackCallRet path name (entry-request-id en) code ""
+                              (list (make-elem "errorname" dt-string ename)
+                                    (make-elem "errorstring" dt-string msg))))])
       (define o (hash-ref (conn-objects c) path))
       (define-values (m ns) (find-member o name '(callback)))
       (define proc (hash-ref (conn-callbacks c) (cons path name)
