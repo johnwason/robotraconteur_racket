@@ -169,6 +169,17 @@ the 40 commits by the model.
 The input is large because every response re-reads the whole conversation,
 including long tool outputs; caching keeps most of that cheap.
 
+**References**
+
+Tool calls that touched each reference source, before the log request:
+
+| Source | Calls | Used for |
+|---|---|---|
+| Robot Raconteur core (C++ and its tests) | 110 | the ServiceTest port, TLS, discovery, node setup, timeouts, examples |
+| RobotRaconteurWeb (C#) | 18 | the first client's protocol details, and the WebSocket handshake |
+| robotraconteurlite (C) | 10 | the WebSocket client handshake and framing |
+| TypeScript clients | 0 | not consulted |
+
 **Result**
 
 | | |
@@ -200,7 +211,14 @@ These constraints shaped everything that followed:
 **Decisions:**
 - **Message Version 2 only.** It's the simplest format the core still speaks: the client advertises only V2 and servers fall back to it. Version 4 and string tables were left out.
 - **No code generation.** Like the Python client, the Racket client reads service definitions from the service at connect time and converts values dynamically. Racket is dynamically typed, so this needed no generator step.
-- **References read instead of guessed:** the C++ core source, the TypeScript client, and later robotraconteurlite, for protocol details such as the handshake, the message layout and the WebSocket subprotocol.
+- **RobotRaconteurWeb as the main reference for the first client.** The
+  pure C# implementation was read first and most closely for protocol
+  details: the message format (`Message.cs`), the connection handshake and
+  heartbeat (`AsyncStreamTransport.cs`), client requests (`Client.cs`) and
+  value packing (`RobotRaconteur.cs`). The C++ core became the main reference
+  from phase 4 on: the ServiceTest port, TLS, discovery, node setup and
+  timeouts. The TypeScript repositories suggested in the first prompt were
+  not consulted.
 - **The Python reference library as the test service**, installed in the image, so the client was tested against the real implementation from the start.
 
 ## Phase 2: WebSocket
@@ -211,7 +229,12 @@ These constraints shaped everything that followed:
 
 **What was built:** an RFC 6455 client (`websocket.rkt`) exposing the connection as a byte stream, so the rest of the client is unchanged. Commit `969fe66`.
 
-**Why this design:** robotraconteurlite treats WebSocket binary frames as a plain byte stream carrying ordinary messages, so the transport could be a thin port wrapper. No `Origin` header is sent, as the servers expect from non-browser clients.
+**Why this design:** RobotRaconteurWeb's `TcpTransport.cs` and the core's
+`websocket_stream.hpp` gave the subprotocol and the servers' handling of the
+`Origin` header, so the client sends none, as the servers expect from
+non-browser clients. The user then pointed to robotraconteurlite, which gave
+the client handshake and treats binary frames as a plain byte stream
+carrying ordinary messages, so the transport could be a thin port wrapper.
 
 ## Phase 3: real devices
 
@@ -462,6 +485,10 @@ On timeout, a custodian shutdown closes everything opened. A test server that ac
 - **CI watcher:** a background CI watcher looked runs up by the local commit and broke when branches changed. Later watchers used the run ID.
 - **Two hung test runs:** the GUI loop and the `timeout` reaping. Each was stopped, its leftover container cleaned up, and the cause fixed before rerunning.
 - **The AI note:** the first draft added an unrequested sentence, which was removed.
+- **This log's references:** the first version said the TypeScript client was a
+  reference and did not mention RobotRaconteurWeb. The transcript shows the
+  TypeScript repositories were never consulted, and RobotRaconteurWeb was the
+  main reference for the first client.
 
 ## How claims were checked
 
