@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/figures/logo-header.svg"></p>
 
-# Robot Raconteur client for Racket (experimental)
+# Robot Raconteur client for Racket
 
 > **This is an AI generation experiment.** The library, its tests and its
 > documentation were written by Claude (Anthropic's Claude Opus 5.5, using
