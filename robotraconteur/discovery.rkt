@@ -26,7 +26,7 @@
 ;; Linux only (interfaces are read from /proc/net/if_inet6).
 
 (require ffi/unsafe ffi/unsafe/define ffi/unsafe/port racket/list racket/string
-         "client.rkt" "pack.rkt")
+         "client.rkt" "pack.rkt" "net.rkt")
 
 (provide (struct-out rr-node-info)
          (struct-out rr-service-info)
@@ -90,20 +90,6 @@
   (and (if_indextoname idx buf)
        (bytes->string/utf-8 (car (regexp-split #rx#"\0" buf)))))
 
-;; Interfaces with an IPv6 link-local address, except loopback (the core does
-;; not announce on loopback): list of ifindex
-(define (link-local-interfaces)
-  (define f "/proc/net/if_inet6")
-  (unless (file-exists? f)
-    (error 'rr-find-nodes "discovery needs IPv6 and Linux (~a not found)" f))
-  (remove-duplicates
-   (for*/list ([line (in-list (call-with-input-file f (lambda (in) (for/list ([l (in-lines in)]) l))))]
-               [fs (in-value (string-split line))]
-               #:when (and (= (length fs) 6)
-                           (string-prefix? (car fs) "fe80")
-                           (not (equal? (list-ref fs 5) "lo"))))
-     (string->number (cadr fs) 16))))
-
 (define (random-uuid-string)
   (define b (for/list ([i 16]) (random 256)))
   (define hex (apply string-append (for/list ([x b]) (string-append (if (< x 16) "0" "") (number->string x 16)))))
@@ -146,8 +132,11 @@
      (check "bind to UDP port 48653"
             (bind fd (sockaddr-in6 (make-bytes 16 0) discovery-port 0) 28))
      (setsockopt fd IPPROTO_IPV6 IPV6_MULTICAST_LOOP (int-bytes 1) 4)
+     (unless (file-exists? "/proc/net/if_inet6")
+       (error 'rr-find-nodes "discovery needs IPv6 and Linux (/proc/net/if_inet6 not found)"))
+     ;; the core does not announce on loopback, so only real interfaces
      (define ifaces
-       (for/list ([idx (in-list (link-local-interfaces))]
+       (for/list ([idx (in-list (map car (link-local-interfaces)))]
                   #:when (zero? (setsockopt fd IPPROTO_IPV6 IPV6_JOIN_GROUP
                                             (bytes-append group-ff02 (int-bytes idx)) 20)))
          idx))

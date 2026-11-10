@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Robot Raconteur client over the rr+tcp and rr+ws transports using Message Version 2.
 
-(require racket/tcp racket/string openssl "tls.rkt" racket/list racket/match racket/async-channel
+(require racket/tcp racket/string openssl "tls.rkt" "net.rkt" racket/list racket/match racket/async-channel
          net/url net/uri-codec
          "message.rkt" "robdef.rkt" "pack.rkt" "websocket.rkt")
 
@@ -414,14 +414,15 @@
   (define local-nodeid (random-bytes 16))
   (define-values (in out tls-nodeid)
     (case transport
-      [(tcp) (let-values ([(i o) (tcp-connect host port)]) (values i o #f))]
-      [(ws) (let-values ([(i o) (ws-connect host port http-path)]) (values i o #f))]
+      [(tcp) (let-values ([(i o) (rr-tcp-connect host port)]) (values i o #f))]
+      [(ws) (let-values ([(i o) (ws-connect host port http-path #:connect rr-tcp-connect)])
+              (values i o #f))]
       [(wss) (let-values ([(i o) (ws-connect host port http-path
                                              #:tls (or ssl-context (ssl-secure-client-context)))])
                (values i o #f))]
       [(rrs-tcp)
        (define ctx (or tls-context (get-default-node-tls-context)))
-       (define-values (raw-in raw-out) (tcp-connect host port))
+       (define-values (raw-in raw-out) (rr-tcp-connect host port))
        (with-handlers ([(lambda (e) #t)
                         (lambda (e) (close-output-port raw-out) (close-input-port raw-in) (raise e))])
          (start-tls raw-in raw-out local-nodeid nodeid nodename ctx))]))

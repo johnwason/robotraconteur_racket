@@ -19,6 +19,7 @@ generated code.
 | `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws` and `rr+wss`) |
 | `robotraconteur/tls.rkt`     | Node TLS for `rrs+tcp`: libssl via the FFI, with the core's certificate rules |
 | `robotraconteur/rootca.rkt`  | The two Robot Raconteur node root certificates (2015 and 2020) |
+| `robotraconteur/net.rkt`     | TCP connect that races a zoneless IPv6 link-local address over every interface |
 | `robotraconteur/discovery.rkt` | Node and service discovery (IPv6 link-local multicast, libc sockets via the FFI) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
@@ -129,14 +130,22 @@ connects over `rr+wss` to the public test service at `wstest2.wasontech.com`,
 the same check as the core's `test/extra/tcp_tls/test_ws_https.py`.
 
 Discovery is tested inside the same container. With `/dev/net/tun`
-available, the container gets `NET_ADMIN` and creates a tap interface in its
-own network namespace; `test/tap_sink.py` holds it open so it gets an IPv6
-link-local address. Two test services, running as separate nodes, announce
-on it. `test/test-discovery.rkt` then:
+available, the container gets `NET_ADMIN` and creates two tap interfaces in
+its own network namespace; `test/tap_sink.py` holds each open so it gets an
+IPv6 link-local address. Two test services, running as separate nodes,
+announce on both. `test/test-discovery.rkt` then:
 
-- finds both nodes, with link-local URLs scoped to the tap (`%25rrtest0`);
+- finds both nodes, each with one link-local URL per interface, scoped to
+  the interface it was heard on (`%25rrtest0`, `%25rrtest1`);
 - finds nodes by name and by id;
 - finds services by type and connects through the discovered URLs.
+
+`test/test-zones.rkt` uses the link-local address of `rrtest0`, which only
+answers through `rrtest0`; through `rrtest1` a connect hangs. It checks that:
+
+- the right zone connects and the wrong one doesn't;
+- a URL without a zone still connects promptly over `rr+tcp` and `rr+ws`;
+- a full session works over that connection.
 
 The container still uses `--network none`, so no packet reaches a real
 network. Without `/dev/net/tun` the stage is skipped (`RR_REQUIRE_DISCOVERY=1`
@@ -184,6 +193,13 @@ tests, the Python async API tests, and numpy helpers.
 
 - Client only. Only `rr+tcp`, `rrs+tcp`, `rr+ws` and `rr+wss`: no local or
   intra transports.
+- IPv6 link-local addresses work with or without a zone. With a zone
+  (`rr+tcp://[fe80::1%25eth0]:port/...`) it is used as given. Without one,
+  `rr-connect` tries the address on every local interface that has a
+  link-local address, all at once, and keeps the first connection, as the C++
+  core does. Racing matters: on a wrong interface the connect only fails when
+  TCP times out. Interfaces are found on Linux only (`/proc/net/if_inet6`).
+  This covers `rr+tcp`, `rrs+tcp` and `rr+ws`, not `rr+wss`.
 - Discovery works like the core's default: IPv6 link-local multicast on
   `FF02::BA86`, UDP port 48653. The client sends request packets and collects
   node announcements, then lists services through each node's

@@ -1,14 +1,15 @@
 #lang racket/base
 ;; Node and service discovery over IPv6 link-local multicast (FF02::BA86).
 ;;
-;; run_tests.sh runs this inside the container's own network namespace with a
-;; tap interface (test/tap_sink.py) standing in for a LAN, and two test
-;; services (separate nodes, named experimental.racket_test and
-;; experimental.racket_test2) listening on the ports in RR_DISCOVERY_PORTS.
+;; run_tests.sh runs this inside the container's own network namespace with
+;; tap interfaces (test/tap_sink.py, names in RR_DISCOVERY_IFACES) standing in
+;; for LANs, and two test services (separate nodes, named
+;; experimental.racket_test and experimental.racket_test2) listening on the
+;; ports in RR_DISCOVERY_PORTS. Each node announces on every interface.
 (require rackunit racket/list racket/string "../robotraconteur/main.rkt")
 
 (define ports (string-split (getenv "RR_DISCOVERY_PORTS")))
-(define iface (or (getenv "RR_DISCOVERY_IFACE") "rrtest0"))
+(define ifaces (string-split (or (getenv "RR_DISCOVERY_IFACES") "rrtest0")))
 
 (define (test-nodes)
   (filter (lambda (n) (string-prefix? (rr-node-info-nodename n) "experimental.racket_test"))
@@ -16,15 +17,19 @@
 
 (define (url-port u) (cadr (regexp-match #px"\\]:([0-9]+)/" u)))
 
-(test-case "finds every node, with link-local URLs scoped to the interface"
+(define (url-zone u) (cadr (regexp-match #px"%25([^]]+)\\]" u)))
+
+(test-case "finds every node, with a link-local URL per interface"
   (define nodes (test-nodes))
   (check-equal? (length nodes) (length ports))
   (check-equal? (sort (map (lambda (n) (url-port (car (rr-node-info-urls n)))) nodes) string<?)
                 (sort ports string<?))
   (for ([n nodes])
     (check-regexp-match #px"^\\{[0-9a-f-]{36}\\}$" (rr-node-info-nodeid n))
-    (for ([u (rr-node-info-urls n)])
-      (check-true (string-contains? u (string-append "%25" iface "]")) u)
+    (define urls (rr-node-info-urls n))
+    ;; one URL per interface, each scoped to the interface it was heard on
+    (check-equal? (sort (map url-zone urls) string<?) (sort ifaces string<?))
+    (for ([u urls])
       (check-true (string-contains? u "service=RobotRaconteurServiceIndex") u))))
 
 (test-case "find by node id and by name"

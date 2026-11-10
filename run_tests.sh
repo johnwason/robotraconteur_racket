@@ -33,7 +33,8 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   -e RR_REQUIRE_DISCOVERY="${RR_REQUIRE_DISCOVERY:-0}" "$IMAGE" sh -c '
   set -e
   raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
-            test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/servicetest/*.rkt
+            test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
+            test/servicetest/*.rkt
   status=0
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
@@ -99,24 +100,35 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
     raco test test/test-rrs.rkt || status=1
   kill $rrs_pids 2>/dev/null || true
 
-  # discovery: a tap interface in this namespace stands in for a LAN; two
-  # test services (two nodes) announce on it
-  echo "==== discovery: IPv6 link-local multicast (tap rrtest0) ===="
-  if ip tuntap add dev rrtest0 mode tap 2>/dev/null && ip link set rrtest0 up; then
-    python3 test/tap_sink.py rrtest0 > /tmp/tap_sink.log 2>&1 &
-    tap_pid=$!
-    for i in $(seq 1 50); do
-      ip -6 addr show dev rrtest0 | grep -q "fe80.*scope link" &&
-        ! ip -6 addr show dev rrtest0 | grep -q tentative && break
-      sleep 0.2
+  # discovery: two tap interfaces in this namespace stand in for two LANs;
+  # two test services (two nodes) announce on both
+  echo "==== discovery and link-local zones (taps rrtest0, rrtest1) ===="
+  if ip tuntap add dev rrtest0 mode tap 2>/dev/null && ip tuntap add dev rrtest1 mode tap &&
+     ip link set rrtest0 up && ip link set rrtest1 up; then
+    tap_pids=""
+    for t in rrtest0 rrtest1; do
+      python3 test/tap_sink.py $t > /tmp/tap_sink_$t.log 2>&1 &
+      tap_pids="$tap_pids $!"
+    done
+    for t in rrtest0 rrtest1; do
+      for i in $(seq 1 50); do
+        ip -6 addr show dev $t | grep -q "fe80.*scope link" &&
+          ! ip -6 addr show dev $t | grep -q tentative && break
+        sleep 0.2
+      done
     done
     python3 test/test_service.py 22240 > /tmp/service_disc1.log 2>&1 &
     disc1=$!
     RR_TEST_NODENAME=experimental.racket_test2 python3 test/test_service.py 22241 > /tmp/service_disc2.log 2>&1 &
     disc2=$!
     wait_ready /tmp/service_disc1.log && wait_ready /tmp/service_disc2.log || status=1
-    RR_DISCOVERY_PORTS="22240 22241" raco test test/test-discovery.rkt || status=1
-    kill $disc1 $disc2 $tap_pid 2>/dev/null || true
+    RR_DISCOVERY_PORTS="22240 22241" RR_DISCOVERY_IFACES="rrtest0 rrtest1" \
+      raco test test/test-discovery.rkt || status=1
+    # the link-local address of rrtest0: reachable through rrtest0 only
+    zone_addr=$(ip -6 addr show dev rrtest0 | sed -n "s/.*inet6 \(fe80[^/]*\).*/\1/p")
+    RR_ZONE_ADDR="$zone_addr" RR_ZONE_PORT=22240 RR_ZONE_GOOD=rrtest0 RR_ZONE_BAD=rrtest1 \
+      raco test test/test-zones.rkt || status=1
+    kill $disc1 $disc2 $tap_pids 2>/dev/null || true
   else
     echo "SKIPPED: cannot create a tap interface (needs /dev/net/tun and NET_ADMIN)"
     if [ "$RR_REQUIRE_DISCOVERY" = 1 ]; then status=1; fi
