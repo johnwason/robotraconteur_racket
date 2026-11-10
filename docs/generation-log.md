@@ -20,7 +20,7 @@ stated during the work, not a full record of the model's internal process.
 
 | | |
 |---|---|
-| Time | about 3.5 hours of active work (see the statistics below) |
+| Time | about 3 hours of agent working time; the user's input was 64 short prompts (see the statistics below) |
 | First working client | about 11 minutes after the first prompt (the first passing test run), committed about 3 minutes later as `06e21ca` |
 | Result | 3,245 lines of Racket in the library (`robotraconteur/`), 2,302 lines of Racket tests plus 604 lines of Python test services, a Scribble manual, examples, CI |
 | Transports | `rr+tcp`, `rr+ws`, `rr+wss`, `rrs+tcp` (Robot Raconteur node TLS), plus IPv6 discovery |
@@ -53,6 +53,11 @@ their own machine, reported the core bugs upstream, and edited this log.
 These prompts changed what was built, or caught problems the model had not
 raised on its own. Each is quoted in full in its phase.
 
+### Technical steering
+
+These draw on the user's knowledge of Robot Raconteur and its
+implementations.
+
 - **Binary test vectors, not literal arrays** (phase 4). This set the
   approach for the ServiceTest port. The user also corrected the target
   files (client tests, not service tests) and pointed to the C++ test server
@@ -73,11 +78,14 @@ raised on its own. Each is quoted in full in its phase.
   for about two minutes, or forever on a silent server.
 - **Asking for discovery and IPv6 multicast** (phase 9), which led to the
   FFI socket layer.
+- **Reynard as the Quick Start device** (phase 14). This replaced the model's
+  first version, which reused a Python service the user did not want.
+
+### Process and governance
+
 - **Network permissions, scoped narrowly** (phases 6 and 13): the public
   `rr+wss` test server, then the simulator's published ports. The user also
   provided the simulator and its README, so ports were not guessed.
-- **Reynard as the Quick Start device** (phase 14). This replaced the model's
-  first version, which reused a Python service the user did not want.
 - **Requiring the AI disclosure in the README and manual** (phase 12).
 - **"Keep a clean git history so we can rewind, and iterate your design"**
   (phase 4), which set the one-commit-per-step practice used throughout.
@@ -85,24 +93,27 @@ raised on its own. Each is quoted in full in its phase.
 ## Session statistics
 
 Counted from the session transcript and the repository. The interaction
-figures cover the whole session, including writing this log; the repository
-figures are for `main` after pull request #3.
+figures are a snapshot of the whole session taken when this revision of the
+log was written, so they include writing and revising the log; the
+repository figures are for `main` after pull request #3.
 
 **Interaction**
 
 | | |
 |---|---|
-| User prompts | 62 (including this log's requests); 2 interrupted the work in progress |
-| Model responses | 520 |
-| Active work | about 3.5 hours: the time spent responding, counting gaps of less than 10 minutes between events |
-| Timing of the early commits | phases 1 to 4 took the first hour of the session; their 19 commits fall within 40 minutes. Git shows them in the machine's local time zone (UTC−5). The history was not rewritten: author and committer dates match, and the transcript has no rebase, reset or amend. After phase 4 the session was idle for about five hours until the next prompt, which the active-work figure leaves out |
+| User prompts | 64, including this log's requests and review feedback; 2 interrupted the work in progress |
+| User input | 822 words typed: a median of 11 words per prompt, and half the prompts were 10 words or fewer. A further 702 words were pasted, mostly review feedback on this log |
+| Model responses | 537 |
+| Agent working time | about 2 hours 55 minutes: from each prompt to the agent's last action before the next prompt, summed over all prompts |
+| User attention | not measured, and not the same as the agent's time. The user reports doing other work in parallel during the session. The time between the agent finishing and the next prompt was under 2 minutes for 43 of 63 turns (median about 1 minute), but that shows when prompts were sent, not how much attention they took |
+| Timing of the early commits | phases 1 to 4 took the first hour of the session; their 19 commits fall within 40 minutes. Git shows them in the machine's local time zone (UTC−5). The history was not rewritten: author and committer dates match, and the transcript has no rebase, reset or amend. After phase 4 the session was idle for about five hours until the next prompt, which the agent working time leaves out |
 | Questions the model asked the user | one through the question tool; confirmations were also given in text before the ServiceTest work, as requested |
 
-**Tool calls: 519**
+**Tool calls: 535**
 
 | Tool | Calls | Used for |
 |---|---|---|
-| Bash | 437 | builds, tests, git, podman, editing files with scripts |
+| Bash | 453 | builds, tests, git, podman, editing files with scripts |
 | Write | 56 | new files |
 | Edit | 8 | small in-place changes |
 | Read | 7 | reading files and images (camera frames) |
@@ -112,16 +123,16 @@ figures are for `main` after pull request #3.
 | WebSearch | 1 | looking for an existing loopback robot driver (phase 3) |
 | AskUserQuestion | 1 | a question when the user planned to switch computers |
 
-Within the shell calls: 122 `podman run` invocations, 8 image builds, 30 runs
-of the full test script, 41 targeted `raco test` runs, and 31 `git commit`
+Within the shell calls: 124 `podman run` invocations, 9 image builds, 31 runs
+of the full test script, 43 targeted `raco test` runs, and 36 `git commit`
 commands.
 
 **Tokens**
 
 | | |
 |---|---|
-| Output | about 565,000 |
-| Input | about 170.5 million, almost all cache reads (169.5 million), plus 1.0 million cache writes and about 1,200 uncached |
+| Output | about 585,000 |
+| Input | about 181.2 million, almost all cache reads (180.1 million), plus 1.1 million cache writes and about 1,200 uncached |
 
 The input is large because every response re-reads the whole conversation,
 including long tool outputs; caching keeps most of that cheap.
