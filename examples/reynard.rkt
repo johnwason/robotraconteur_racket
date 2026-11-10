@@ -36,7 +36,7 @@
 ;; Stream state for a moment over a wire connection
 (define w (rr-wire-connect c "state"))
 (sleep 0.5)
-(define s (rr-wire-in-value w))
+(define s (rr-wire-wait-in-value w))
 (printf "streamed state: time=~a robot_position=~a arm_position=~a\n"
         (rr-struct-ref s "time") (rr-struct-ref s "robot_position") (rr-struct-ref s "arm_position"))
 (rr-wire-close w)

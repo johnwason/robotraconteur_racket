@@ -11,6 +11,7 @@
          rr-object-path
          rr-object-type
          rr-object-members
+         rr-member-direction
          rr-service-definitions
          rr-attributes
          rr-get
@@ -40,8 +41,13 @@
          rr-wire-connect
          rr-wire-connection?
          rr-wire-in-value
+         rr-wire-wait-in-value
+         rr-wire-try-in-value
          rr-wire-in-value-valid?
+         rr-wire-set-in-value-lifespan!
          rr-wire-set-out-value!
+         rr-wire-out-value
+         rr-wire-try-out-value
          rr-wire-add-listener!
          rr-wire-close
          ;; pipes
@@ -422,6 +428,13 @@
                     (format "member ~a is a ~a, expected ~a" name (member-kind mem) kinds)))
   (values mem ns))
 
+;; 'both, 'readonly or 'writeonly
+(define (rr-member-direction obj name)
+  (define-values (m ns) (find-member obj name))
+  (cond [(member-has-modifier? m "readonly") 'readonly]
+        [(member-has-modifier? m "writeonly") 'writeonly]
+        [else 'both]))
+
 (define (rr-object-members obj)
   (for/list ([m (in-list (object-members (conn-registry (rr-object-conn obj))
                                          (rr-object-ns obj) (rr-object-def obj)))])
@@ -691,10 +704,13 @@
                    (make-elem "nanoseconds" dt-int32 (vector ns)))))
 
 ;; returns (cons seconds nanoseconds)
-(define (unpack-timespec en)
-  (define t (elem-data (find-elem (entry-elements en) "packettime")))
+(define (elem-timespec e)
+  (define t (elem-data e))
   (cons (vector-ref (elem-data (find-elem t "seconds")) 0)
         (vector-ref (elem-data (find-elem t "nanoseconds")) 0)))
+
+(define (unpack-timespec en)
+  (elem-timespec (find-elem (entry-elements en) "packettime")))
 
 (define (wire-value obj m ns en)
   (unpack-elem (reg-of obj) ns (member-type m) (find-elem (entry-elements en) "packet")))
@@ -716,16 +732,24 @@
        (pack-elem (reg-of obj) ns "packet" (member-type m) v))
   (void))
 
-(struct wire-connection (obj member ns [in-value #:mutable] [in-time #:mutable]
+;; in-time/out-time are wire timespecs (cons seconds nanoseconds); in-recv is
+;; the local receive time in ms, used for the in-value lifespan.
+(struct wire-connection (obj member ns
+                             [in-value #:mutable] [in-time #:mutable] [in-recv #:mutable]
+                             [out-value #:mutable] [out-time #:mutable]
+                             [lifespan #:mutable]
                              [listeners #:mutable] [closed? #:mutable]))
 (define (rr-wire-connection? x) (wire-connection? x))
 
 (define (rr-wire-connect obj name)
   (define-values (m ns) (find-member obj name '(wire)))
   (define c (rr-object-conn obj))
-  (define w (wire-connection obj m ns 'unset #f '() #f))
-  (hash-set! (conn-wires c) (cons (rr-object-path obj) name) w)
-  (req obj 'WireConnectReq name)
+  (define key (cons (rr-object-path obj) name))
+  (define w (wire-connection obj m ns 'unset #f #f 'unset #f #f '() #f))
+  ;; register first: packets may arrive before WireConnectRet
+  (hash-set! (conn-wires c) key w)
+  (with-handlers ([(lambda (e) #t) (lambda (e) (hash-remove! (conn-wires c) key) (raise e))])
+    (req obj 'WireConnectReq name))
   w)
 
 (define (dispatch-wire-packet! c en)
@@ -740,27 +764,65 @@
                             (wire-connection-ns w) en))
       (set-wire-connection-in-value! w v)
       (set-wire-connection-in-time! w ts)
+      (set-wire-connection-in-recv! w (current-inexact-milliseconds))
       (for ([l (in-list (wire-connection-listeners w))])
         (async-channel-put (conn-dispatch-ch c) (lambda () (l v ts)))))))
 
-(define (rr-wire-in-value-valid? w) (not (eq? (wire-connection-in-value w) 'unset)))
+(define (in-value-current? w)
+  (and (not (eq? (wire-connection-in-value w) 'unset))
+       (let ([life (wire-connection-lifespan w)])
+         (or (not life)
+             (< (- (current-inexact-milliseconds) (wire-connection-in-recv w)) (* 1000 life))))))
 
-;; Waits up to `timeout` seconds for a first value to arrive.
-(define (rr-wire-in-value w #:timeout [timeout 5])
-  (let loop ([t 0])
+(define (rr-wire-in-value-valid? w) (in-value-current? w))
+
+;; Seconds an in-value stays valid after it is received (#f = forever).
+(define (rr-wire-set-in-value-lifespan! w seconds) (set-wire-connection-lifespan! w seconds))
+
+;; Latest in-value; raises ValueNotSet if none has arrived or it has expired.
+(define (rr-wire-in-value w)
+  (unless (in-value-current? w)
+    (raise-rr-error 106 "RobotRaconteur.ValueNotSet" "wire in-value not set"))
+  (wire-connection-in-value w))
+
+;; (values ok? value timespec)
+(define (rr-wire-try-in-value w)
+  (if (in-value-current? w)
+      (values #t (wire-connection-in-value w) (wire-connection-in-time w))
+      (values #f #f #f)))
+
+;; Waits up to timeout seconds for an in-value.
+(define (rr-wire-wait-in-value w #:timeout [timeout 5])
+  (define deadline (+ (current-inexact-milliseconds) (* 1000 timeout)))
+  (let loop ()
     (cond
-      [(rr-wire-in-value-valid? w) (wire-connection-in-value w)]
-      [(>= t timeout) (raise-rr-error 106 "RobotRaconteur.ValueNotSet" "wire value not set")]
-      [else (sleep 0.01) (loop (+ t 0.01))])))
+      [(in-value-current? w) (wire-connection-in-value w)]
+      [(> (current-inexact-milliseconds) deadline)
+       (raise-rr-error 106 "RobotRaconteur.ValueNotSet" "wire in-value not set")]
+      [else (sleep 0.01) (loop)])))
 
 (define (rr-wire-set-out-value! w v)
   (define obj (wire-connection-obj w))
   (define m (wire-connection-member w))
+  (define ts-elem (timespec-elem))
   (send-entries! (rr-object-conn obj)
                  (list (entry 'WirePacket (rr-object-path obj) (member-name m) 0 0 "unreliable\n"
-                              (list (timespec-elem)
+                              (list ts-elem
                                     (pack-elem (reg-of obj) (wire-connection-ns w) "packet"
-                                               (member-type m) v))))))
+                                               (member-type m) v)))))
+  (set-wire-connection-out-value! w v)
+  (set-wire-connection-out-time! w (elem-timespec ts-elem)))
+
+(define (rr-wire-out-value w)
+  (when (eq? (wire-connection-out-value w) 'unset)
+    (raise-rr-error 106 "RobotRaconteur.ValueNotSet" "wire out-value not set"))
+  (wire-connection-out-value w))
+
+;; (values ok? value timespec)
+(define (rr-wire-try-out-value w)
+  (if (eq? (wire-connection-out-value w) 'unset)
+      (values #f #f #f)
+      (values #t (wire-connection-out-value w) (wire-connection-out-time w))))
 
 (define (rr-wire-add-listener! w proc)
   (set-wire-connection-listeners! w (append (wire-connection-listeners w) (list proc))))

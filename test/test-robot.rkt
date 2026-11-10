@@ -13,7 +13,7 @@
        (for/and ([x a] [y b]) (< (abs (- x y)) tol))))
 
 (define state-wire (rr-wire-connect c "robot_state"))
-(define (state) (rr-wire-in-value state-wire))
+(define (state) (rr-wire-wait-in-value state-wire))
 (define (joint-pos) (rr-struct-ref (state) "joint_position"))
 
 ;; wait (up to timeout s) for the measured joint position to reach target
