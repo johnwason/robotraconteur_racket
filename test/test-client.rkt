@@ -6,7 +6,12 @@
 (define url (or (getenv "RR_TEST_URL")
                 "rr+tcp://127.0.0.1:22222/?service=test"))
 
-(define c (rr-connect url))
+;; RR_TEST_CA: extra PEM certificate to trust for rr+wss (local test relay)
+(define ssl-context
+  (let ([ca (getenv "RR_TEST_CA")])
+    (and ca (rr-make-ssl-context #:trust (list ca)))))
+
+(define c (rr-connect url #:ssl-context ssl-context))
 (printf "connected: ~a\n" c)
 
 (test-case "service definitions and attributes"

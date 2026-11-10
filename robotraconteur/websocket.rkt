@@ -5,8 +5,12 @@
 ;; payloads are concatenated and parsed as ordinary "RRAC" messages (see
 ;; robotraconteurlite tcp_transport.c). ws-connect returns an input and output
 ;; port pair so the rest of the client is transport agnostic.
+;;
+;; With #:tls, the TCP connection is wrapped in standard TLS first (wss://).
+;; This is ordinary web TLS (certificate chain and hostname checked by the
+;; given OpenSSL client context), not Robot Raconteur's own rrs+ STARTTLS.
 
-(require racket/tcp racket/port racket/string file/sha1 net/base64)
+(require racket/tcp racket/port racket/string file/sha1 net/base64 openssl)
 
 (provide ws-connect
          ws-handshake)
@@ -57,11 +61,15 @@
     (error 'ws-connect "server did not accept the Robot Raconteur WebSocket subprotocol"))
   (wrap-websocket raw-in raw-out))
 
-(define (ws-connect host port path)
-  (define-values (raw-in raw-out) (tcp-connect host port))
+(define (ws-connect host port path #:tls [tls #f])
+  (define-values (raw-in raw-out)
+    (if tls (ssl-connect host port tls) (tcp-connect host port)))
+  ;; Host header omits the scheme's default port, as browsers do
+  (define host-header
+    (if (= port (if tls 443 80)) host (format "~a:~a" host port)))
   (with-handlers ([(lambda (e) #t)
                    (lambda (e) (close-input-port raw-in) (close-output-port raw-out) (raise e))])
-    (ws-handshake raw-in raw-out (format "~a:~a" host port) path)))
+    (ws-handshake raw-in raw-out host-header path)))
 
 ;; ---------------------------------------------------------------------------
 ;; Framing

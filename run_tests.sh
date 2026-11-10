@@ -1,7 +1,8 @@
 #!/bin/sh
 # Run the integration tests inside the dev container with networking disabled
 # (only the container's own loopback interface is available).
-# The full suite runs once per transport, each against a fresh service, then
+# The full suite runs once per transport (rr+tcp, rr+ws, and rr+wss through a
+# local TLS relay with a throwaway certificate), each against a fresh service, then
 # interop tests run against Reynard the Robot and a loopback AbstractRobot,
 # then the ServiceTest ports run against the Robot Raconteur C++ test server
 # (built by build_cpp_test_server.sh; skipped if it has not been built).
@@ -18,15 +19,18 @@ SRC_MOUNT=""
 exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT "$IMAGE" sh -c '
   set -e
   raco make robotraconteur/main.rkt test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
-            test/servicetest/*.rkt
+            test/test-wss.rkt test/servicetest/*.rkt
   status=0
+  wait_ready() {
+    for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
+    cat $1; return 1
+  }
   run_suite() {
     name=$1; port=$2; url=$3
     log=/tmp/service_$name.log
     python3 test/test_service.py $port > $log 2>&1 &
     pid=$!
-    for i in $(seq 1 100); do grep -q READY $log && break; sleep 0.1; done
-    grep -q READY $log || { cat $log; return 1; }
+    wait_ready $log || return 1
     echo "==== transport: $name ($url) ===="
     RR_TEST_URL="$url" raco test test/test-client.rkt || status=1
     kill $pid 2>/dev/null || true
@@ -35,6 +39,23 @@ exec podman run --rm --network none -v "$PWD":/work:Z $SRC_MOUNT "$IMAGE" sh -c 
   }
   run_suite tcp 22222 "rr+tcp://127.0.0.1:22222/?service=test"
   run_suite ws  22223 "rr+ws://127.0.0.1:22223/?service=test"
+
+  # rr+wss: a TLS relay (standing in for a reverse proxy) in front of the
+  # rr+ws service, with a self-signed certificate valid for DNS:localhost only
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+          -subj /CN=localhost -addext subjectAltName=DNS:localhost \
+          -keyout /tmp/wss.key -out /tmp/wss.pem 2>/dev/null
+  python3 test/test_service.py 22224 > /tmp/service_wss.log 2>&1 &
+  wss_pid=$!
+  python3 test/tls_proxy.py 22443 22224 /tmp/wss.pem /tmp/wss.key > /tmp/tls_proxy.log 2>&1 &
+  proxy_pid=$!
+  wait_ready /tmp/service_wss.log && wait_ready /tmp/tls_proxy.log || status=1
+  echo "==== transport: wss (rr+wss://localhost:22443 via TLS relay) ===="
+  RR_TEST_URL="rr+wss://localhost:22443/?service=test" RR_TEST_CA=/tmp/wss.pem \
+    raco test test/test-client.rkt || status=1
+  echo "==== wss certificate checks ===="
+  RR_WSS_PORT=22443 RR_TEST_CA=/tmp/wss.pem raco test test/test-wss.rkt || status=1
+  kill $wss_pid $proxy_pid 2>/dev/null || true
 
   # start a service, wait until its TCP port accepts connections, run a test file
   run_interop() {

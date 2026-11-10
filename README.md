@@ -1,7 +1,8 @@
 # Robot Raconteur client for Racket (experimental)
 
 A small, pure-Racket Robot Raconteur **client**. It talks to standard Robot
-Raconteur services over `rr+tcp` or `rr+ws` (WebSocket) using Message Version 2. It reads the
+Raconteur services over `rr+tcp`, `rr+ws` (WebSocket) or `rr+wss` (WebSocket
+over standard TLS) using Message Version 2. It reads the
 service definitions from the service at connect time, so you don't need
 generated code.
 
@@ -12,7 +13,7 @@ generated code.
 | `robotraconteur/message.rkt` | Message V2 binary codec (header / entries / elements) |
 | `robotraconteur/robdef.rkt`  | Minimal `.robdef` parser (structs, pods, namedarrays, enums, objects) |
 | `robotraconteur/pack.rkt`    | Converts Racket values to and from message elements, using the type info |
-| `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws`) |
+| `robotraconteur/websocket.rkt` | Minimal WebSocket client that exposes the connection as a byte stream (used for `rr+ws` and `rr+wss`) |
 | `robotraconteur/client.rkt`  | Transport selection, handshake, request/response, and the member APIs |
 | `robotraconteur/main.rkt`    | Public module |
 | `test/`                      | Python reference service and the Racket integration tests |
@@ -30,6 +31,8 @@ generated code.
 (define obj (rr-connect "rr+tcp://127.0.0.1:22222/?service=test"))
 ;; or over WebSocket (same server port):
 ;; (rr-connect "rr+ws://127.0.0.1:22222/?service=test")
+;; or over WebSocket with TLS, e.g. behind an HTTPS reverse proxy (default port 443):
+;; (rr-connect "rr+wss://wstest2.wasontech.com/robotraconteur?service=testobj")
 (rr-get obj "d1")                       ; properties
 (rr-set! obj "d1" 2.0)
 (rr-call obj "add" 1.0 2.0)             ; functions
@@ -92,7 +95,15 @@ This builds the `rr-racket-dev` image from the `Dockerfile` (Ubuntu 24.04,
 Racket, and Python `robotraconteur`) if it isn't already built. It then runs
 the Python test service and the Racket tests in one container with
 `--network none`, so all traffic stays on the container's loopback. The full
-suite runs twice, once over `rr+tcp` and once over `rr+ws`.
+suite runs three times: over `rr+tcp`, over `rr+ws`, and over `rr+wss`
+through a local TLS relay (`test/tls_proxy.py`, standing in for a reverse
+proxy) with a throwaway self-signed certificate valid for `localhost` only.
+`test/test-wss.rkt` then checks that a certificate outside the trust store, and
+a trusted certificate used for the wrong hostname, are both rejected.
+
+`./run_online_tests.sh` needs internet access and is kept separate. It
+connects over `rr+wss` to the public test service at `wstest2.wasontech.com`,
+the same check as the core's `test/extra/tcp_tls/test_ws_https.py`.
 
 It then runs interop tests against real services:
 
@@ -134,8 +145,12 @@ tests, the Python async API tests, and numpy helpers.
 
 ## Limitations
 
-- Client only. Only `rr+tcp` and `rr+ws`: no TLS (`rrs+tcp`, `rr+wss`), local,
-  or intra transports, and no node discovery. The WebSocket client sends no
+- Client only. Only `rr+tcp`, `rr+ws` and `rr+wss`: no Robot Raconteur TLS
+  (`rrs+tcp`), local or intra transports, and no node discovery. `rr+wss` is
+  plain web TLS: the certificate chain and hostname are checked, by default
+  against the system trust store. `rr-make-ssl-context #:trust (list "ca.pem")`
+  builds a context that also trusts extra certificates; pass it to `rr-connect`
+  as `#:ssl-context`. No client certificates. The WebSocket client sends no
   `Origin` header (servers accept that from non-browser clients) and does not
   follow HTTP redirects.
 - Only Message Version 2. Version 4 and string tables are not implemented

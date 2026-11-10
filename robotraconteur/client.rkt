@@ -1,11 +1,12 @@
 #lang racket/base
 ;; Robot Raconteur client over the rr+tcp and rr+ws transports using Message Version 2.
 
-(require racket/tcp racket/string racket/list racket/match racket/async-channel
+(require racket/tcp racket/string openssl racket/list racket/match racket/async-channel
          net/url net/uri-codec
          "message.rkt" "robdef.rkt" "pack.rkt" "websocket.rkt")
 
 (provide rr-connect
+         rr-make-ssl-context
          rr-close
          rr-object?
          rr-object-path
@@ -284,8 +285,10 @@
 ;; URL parsing:
 ;;   rr+tcp://host:port/?service=name[&nodename=..][&nodeid=..]
 ;;   rr+ws://host:port/[path]?service=name   (WebSocket, same port as rr+tcp)
+;;   rr+wss://host[:port]/[path]?service=name (WebSocket over standard TLS,
+;;                                             default port 443)
 ;; Returns (values transport host port http-path service nodename nodeid)
-;; where transport is 'tcp or 'ws.
+;; where transport is 'tcp, 'ws or 'wss.
 
 (define (parse-rr-url s)
   (define u (string->url s))
@@ -293,7 +296,8 @@
     (case (url-scheme u)
       [("rr+tcp" "tcp") 'tcp]
       [("rr+ws") 'ws]
-      [else (error 'rr-connect "unsupported URL scheme (expected rr+tcp or rr+ws): ~a" s)]))
+      [("rr+wss") 'wss]
+      [else (error 'rr-connect "unsupported URL scheme (expected rr+tcp, rr+ws or rr+wss): ~a" s)]))
   (define q (url-query u))
   (define service (cond [(assq 'service q) => cdr]
                         [else (error 'rr-connect "URL missing service: ~a" s)]))
@@ -304,7 +308,8 @@
     (cond [(regexp-match #px"^[^:]+://[^/?]*(.*)$" s)
            => (lambda (m) (let ([p (cadr m)]) (if (string-prefix? p "/") p (string-append "/" p))))]
           [else "/"]))
-  (values transport (url-host u) (or (url-port u) 48653) http-path service nodename nodeid))
+  (define default-port (if (eq? transport 'wss) 443 48653))
+  (values transport (url-host u) (or (url-port u) default-port) http-path service nodename nodeid))
 
 (define (parse-nodeid s)
   (define hex (regexp-replace* #px"[{}-]" s ""))
@@ -319,12 +324,31 @@
 (define (random-bytes n) (apply bytes (for/list ([i n]) (random 256))))
 (define (random-u32) (+ 1 (random 4294967087)))
 
-(define (rr-connect url #:username [username #f] #:credentials [credentials #f])
+;; #:ssl-context is the OpenSSL client context for rr+wss. The default,
+;; ssl-secure-client-context, verifies the certificate chain against the
+;; system trust store and checks the hostname.
+
+;; A verifying client context for rr+wss that also trusts the given PEM
+;; certificate files (e.g. a private CA or a self-signed proxy certificate).
+;; Chain and hostname checks stay on; the system trust store is kept unless
+;; #:system-trust? is #f.
+(define (rr-make-ssl-context #:trust [trust '()] #:system-trust? [system-trust? #t])
+  (define ctx (ssl-make-client-context 'auto))
+  (when system-trust? (ssl-load-default-verify-sources! ctx))
+  (for ([pem (in-list trust)]) (ssl-load-verify-source! ctx pem))
+  (ssl-set-verify! ctx #t)
+  (ssl-set-verify-hostname! ctx #t)
+  (ssl-seal-context! ctx)
+  ctx)
+(define (rr-connect url #:username [username #f] #:credentials [credentials #f]
+                    #:ssl-context [ssl-context #f])
   (define-values (transport host port http-path service nodename nodeid) (parse-rr-url url))
   (define-values (in out)
     (case transport
       [(tcp) (tcp-connect host port)]
-      [(ws) (ws-connect host port http-path)]))
+      [(ws) (ws-connect host port http-path)]
+      [(wss) (ws-connect host port http-path
+                         #:tls (or ssl-context (ssl-secure-client-context)))]))
   (define c (conn in out (make-semaphore 1) (random-bytes 16) nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
