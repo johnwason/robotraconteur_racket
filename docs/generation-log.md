@@ -21,11 +21,11 @@ stated during the work, not a full record of the model's internal process.
 | | |
 |---|---|
 | Time | about 3.5 hours of active work (see the statistics below) |
-| First working client | minutes after the first prompt (commit `06e21ca`) |
-| Result | 3,245 lines of Racket in the library (`robotraconteur/`), about 2,900 lines of tests, a Scribble manual, examples, CI |
+| First working client | about 11 minutes after the first prompt (the first passing test run), committed about 3 minutes later as `06e21ca` |
+| Result | 3,245 lines of Racket in the library (`robotraconteur/`), 2,302 lines of Racket tests plus 604 lines of Python test services, a Scribble manual, examples, CI |
 | Transports | `rr+tcp`, `rr+ws`, `rr+wss`, `rrs+tcp` (Robot Raconteur node TLS), plus IPv6 discovery |
 | History | 43 commits, 3 pull requests, all merged |
-| Tests | about 164 tests across 12 stages, run in podman, with no network access except to the simulator and the public `rr+wss` test server when explicitly allowed |
+| Tests | 102 test cases in 12 stages, run in podman without network access (see the statistics for how they are counted) |
 | Published | `robotraconteur` on pkgs.racket-lang.org |
 
 ## The AI
@@ -41,11 +41,46 @@ stated during the work, not a full record of the model's internal process.
 
 **Who did what.** The model wrote all the code, tests, documentation,
 commit messages and pull request descriptions. It ran every build and test
-itself, through the shell, in podman containers. The user gave the
-direction and permissions (prompts, the GitHub repository and token, access
-to the simulator), merged the pull requests, registered the package on
-pkgs.racket-lang.org, ran examples on their own machine, reported the core
-bugs upstream, and edited this log.
+itself, through the shell, in podman containers. The user steered the work:
+several prompts set the direction or caught real problems, listed under
+"Decisive user interventions" below. The user also gave permissions (the
+GitHub repository and token, access to the simulator), merged the pull
+requests, registered the package on pkgs.racket-lang.org, ran examples on
+their own machine, reported the core bugs upstream, and edited this log.
+
+## Decisive user interventions
+
+These prompts changed what was built, or caught problems the model had not
+raised on its own. Each is quoted in full in its phase.
+
+- **Binary test vectors, not literal arrays** (phase 4). This set the
+  approach for the ServiceTest port. The user also corrected the target
+  files (client tests, not service tests) and pointed to the C++ test server
+  library as the test target, which made the in-process FFI harness
+  possible.
+- **robotraconteurlite as the WebSocket reference** (phase 2). Its treatment
+  of frames as a byte stream led to the thin transport design.
+- **"rrs+ws was a dead end"** (phase 5). This saved implementing a transport
+  that would not have been used.
+- **Embedding the two root certificates** (phase 7). This defined what
+  `rrs+tcp` needed to trust by default.
+- **"Does the tcp connector test different ipv6 zone ids?"** (phase 10). This
+  exposed that zoneless link-local URLs failed. "The user won't know the
+  correct scope id" set the requirement to race every interface, as the core
+  does.
+- **"What is the TCP timeout?"** and **"connect should always timeout after
+  around 5-10 seconds"** (phase 11). These exposed that a connect could hang
+  for about two minutes, or forever on a silent server.
+- **Asking for discovery and IPv6 multicast** (phase 9), which led to the
+  FFI socket layer.
+- **Network permissions, scoped narrowly** (phases 6 and 13): the public
+  `rr+wss` test server, then the simulator's published ports. The user also
+  provided the simulator and its README, so ports were not guessed.
+- **Reynard as the Quick Start device** (phase 14). This replaced the model's
+  first version, which reused a Python service the user did not want.
+- **Requiring the AI disclosure in the README and manual** (phase 12).
+- **"Keep a clean git history so we can rewind, and iterate your design"**
+  (phase 4), which set the one-commit-per-step practice used throughout.
 
 ## Session statistics
 
@@ -60,6 +95,7 @@ figures are for `main` after pull request #3.
 | User prompts | 62 (including this log's requests); 2 interrupted the work in progress |
 | Model responses | 520 |
 | Active work | about 3.5 hours: the time spent responding, counting gaps of less than 10 minutes between events |
+| Timing of the early commits | phases 1 to 4 took the first hour of the session; their 19 commits fall within 40 minutes. Git shows them in the machine's local time zone (UTC−5). The history was not rewritten: author and committer dates match, and the transcript has no rebase, reset or amend. After phase 4 the session was idle for about five hours until the next prompt, which the active-work figure leaves out |
 | Questions the model asked the user | one through the question tool; confirmations were also given in text before the ServiceTest work, as requested |
 
 **Tool calls: 519**
@@ -100,7 +136,7 @@ including long tool outputs; caching keeps most of that cheap.
 | Commits | 43: 40 by the model, 3 pull request merges by the user |
 | Pull requests | 3 merged |
 | CI runs | 8, all passed |
-| Tests | about 164, in 12 stages |
+| Tests | 102 test cases. A full offline run reports 164 results: the 21-test client suite runs once per transport (4 times), and the one online `rr+wss` test runs only in the separate online check (102 − 21 + 84 − 1 = 164) |
 
 ## Ground rules given at the start
 
