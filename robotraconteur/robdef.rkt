@@ -176,8 +176,10 @@
 ;; Top level
 
 (define (parse-robdef text)
+  ;; a trailing backslash continues the line
+  (define joined (regexp-replace* #px"\\\\[ \t]*\r?\n" text " "))
   (define lines
-    (for/list ([l (in-list (string-split text "\n"))])
+    (for/list ([l (in-list (string-split joined "\n"))])
       (string-trim (strip-comment l))))
   (define name #f)
   (define imports '())

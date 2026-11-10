@@ -20,6 +20,7 @@
          rr-add-event-listener!
          rr-set-callback!
          rr-new-structure
+         rr-enum-values
          ;; generators
          rr-generator?
          rr-generator-next
@@ -356,6 +357,13 @@
   (define o obj)
   (define-values (q kind def) (resolve-type (conn-registry (rr-object-conn o)) (rr-object-ns o) type))
   (new-structure (conn-registry (rr-object-conn o)) q))
+
+;; Enum values as a list of (name . integer), name a string.
+;; type may be qualified or relative to the object's service definition.
+(define (rr-enum-values obj type)
+  (define-values (q kind def) (resolve-type (conn-registry (rr-object-conn obj)) (rr-object-ns obj) type))
+  (unless (eq? kind 'enum) (error 'rr-enum-values "~a is not an enum" q))
+  (enumdef-values def))
 
 ;; ---------------------------------------------------------------------------
 ;; Members
