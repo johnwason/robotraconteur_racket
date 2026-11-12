@@ -113,6 +113,7 @@ open it with `raco docs robotraconteur`. Its source is
 | `examples/reynard.rkt`       | Racket port of Reynard the Robot's Python client example |
 | `examples/standard_devices/`  | Ports of the core's standard device examples (robot and camera clients) |
 | `examples/features/discovery/` | Ports of the core's discovery examples (find Reynard by type, node name or node ID) |
+| `examples/tesseract/`         | Port of the Tesseract motion planning service's freespace move example |
 | `test/loopback_robot.py`     | Loopback `AbstractRobot` driver (standard `com.robotraconteur.robotics.robot.Robot`) |
 | `test/loopback_camera.py`    | Loopback camera with synthetic frames (standard `com.robotraconteur.imaging.Camera`) |
 
@@ -230,6 +231,29 @@ The type, node name and service name can be passed as arguments.
 Discovery is IPv6 link-local multicast and Linux only; unlike the Python
 versions there is no need to wait a few seconds first, since each call sends
 discovery requests and listens for 3 seconds.
+
+## Tesseract example
+
+`examples/tesseract/freespace-move.rkt` ports the Python freespace move
+example from
+[tesseract_robotraconteur](https://github.com/tesseract-robotics/tesseract_robotraconteur),
+a Robot Raconteur service for the Tesseract motion planner. It loads an
+environment, builds a program of two Cartesian moves, runs the
+`FreespacePipeline` task and prints the planned joint positions. Start the
+service with its default ABB IRB2400 scene, then run the client:
+
+```sh
+podman run --rm -p 63158:63158 docker.io/wasontech/tesseract_robotraconteur:0.4.0
+racket examples/tesseract/freespace-move.rkt
+```
+
+Pass another URL as the argument for a remote service. The service's types
+are read at connect time, so the example builds every structure with
+`rr-new-structure`, and small helpers replace the `GeometryUtil` and
+`UuidUtil` classes the Python version takes from the companion library. It
+was run against the 0.4.0 image, where it plans the same moves as the Python
+version. The joint positions can differ from run to run, since the planner may
+pick a different inverse kinematics solution for the same poses.
 
 ## Tests
 

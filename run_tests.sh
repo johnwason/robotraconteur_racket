@@ -48,6 +48,8 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
             test/test-timeouts.rkt test/test-device-examples.rkt test/test-discovery-examples.rkt \
             test/test-quickstart.rkt \
             test/servicetest/*.rkt
+  # The Tesseract example needs the Tesseract service, so it is only compiled
+  raco make examples/tesseract/freespace-move.rkt
   wait_ready() {
     for i in $(seq 1 100); do grep -q READY $1 && return 0; sleep 0.1; done
     cat $1; return 1
