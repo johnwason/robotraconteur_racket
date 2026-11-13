@@ -388,8 +388,8 @@
   (when (eof-object? ret)
     (raise-rr-error 1 "RobotRaconteur.ConnectionError"
                     "connection closed by server during STARTTLS (does it support TLS?)"))
-  (define ren (car (message-entries ret)))
-  (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "STARTTLS"))
+  (define ren (and (pair? (message-entries ret)) (car (message-entries ret))))
+  (unless (and ren (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "STARTTLS"))
     (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected STARTTLS response"))
   (unless (zero? (entry-error ren)) (stream-op-error ren "STARTTLS refused"))
   ;; the node the server says it is must be the node the URL asked for
@@ -479,8 +479,8 @@
     (send-message! c cc)
     (define ret (read-message in))
     (when (eof-object? ret) (raise-rr-error 1 "RobotRaconteur.ConnectionError" "connection closed during handshake"))
-    (define ren (car (message-entries ret)))
-    (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
+    (define ren (and (pair? (message-entries ret)) (car (message-entries ret))))
+    (unless (and ren (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
       (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected handshake response"))
     (unless (memv (entry-error ren) '(0 2)) (raise (entry->exn c ren)))
     ;; over TLS, the connection must be with the node whose certificate was checked
