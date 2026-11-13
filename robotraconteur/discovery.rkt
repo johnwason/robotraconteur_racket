@@ -26,6 +26,7 @@
 ;; Linux only (interfaces are read from /proc/net/if_inet6).
 
 (require ffi/unsafe ffi/unsafe/define ffi/unsafe/port racket/list racket/string
+         net/uri-codec
          "client.rkt" "pack.rkt" "net.rkt")
 
 (provide (struct-out rr-node-info)
@@ -103,17 +104,42 @@
                       (string-append "\\1\\2%25" ifname "\\3"))
       url))
 
+;; A NodeID in the form "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" (lowercase),
+;; or #f if s is not one. Braces and dashes are optional, as for the core's
+;; NodeID parser.
+(define (normalize-nodeid s)
+  (define m (regexp-match #px"^\\{?([0-9a-fA-F-]+)\\}?$" s))
+  (define hex (and m (string-downcase (string-replace (cadr m) "-" ""))))
+  (and hex (= (string-length hex) 32)
+       (format "{~a-~a-~a-~a-~a}" (substring hex 0 8) (substring hex 8 12) (substring hex 12 16)
+               (substring hex 16 20) (substring hex 20 32))))
+
+(define zero-nodeid "{00000000-0000-0000-0000-000000000000}")
+
+;; the normalized nodeid= query value of a URL, or #f
+(define (url-nodeid url)
+  (define m (regexp-match #px"[?&]nodeid=([^&#]*)" url))
+  (and m (normalize-nodeid (with-handlers ([exn:fail? (lambda (e) "")]) (uri-decode (cadr m))))))
+
 ;; Parse a node announcement; #f if it isn't one.
 ;; Returns (list nodeid nodename urls)
+;; Like the core (Discovery::NodeAnnouncePacketReceived and NodeDetected),
+;; announcements with an invalid or all-zero NodeID are ignored, and only
+;; URLs for the announced NodeID are kept: anyone on the LAN can send these.
 (define (parse-announce text ifname)
   (define lines (string-split text "\n"))
+  (define id+name
+    (and (pair? lines) (pair? (cdr lines))
+         (equal? (car lines) "Robot Raconteur Node Discovery Packet")
+         (string-split (cadr lines) "," #:trim? #f)))
+  (define id (and (pair? id+name) (normalize-nodeid (car id+name))))
   (cond
-    [(and (pair? lines) (pair? (cdr lines))
-          (equal? (car lines) "Robot Raconteur Node Discovery Packet"))
-     (define id+name (string-split (cadr lines) "," #:trim? #f))
-     (define urls (for/list ([l (in-list (cddr lines))] #:when (regexp-match? #rx"^[a-z+]+://" l))
+    [(and id (not (equal? id zero-nodeid)))
+     (define urls (for/list ([l (in-list (cddr lines))]
+                             #:when (and (regexp-match? #rx"^[a-z+]+://" l)
+                                         (equal? (url-nodeid l) id)))
                     (add-zone l ifname)))
-     (list (string-downcase (car id+name))
+     (list id
            (if (pair? (cdr id+name)) (string-join (cdr id+name) ",") "")
            urls)]
     [else #f]))
