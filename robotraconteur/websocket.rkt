@@ -100,9 +100,25 @@
    mask
    masked))
 
+;; Reads exactly n bytes, or returns eof if the stream ends first. Frame
+;; lengths come from the wire (up to 2^63), and read-bytes allocates all n
+;; bytes before reading, so read in chunks: memory grows with the data
+;; actually received.
+(define read-chunk-size 65536)
+
 (define (read-exact n in)
-  (define b (read-bytes n in))
-  (if (or (eof-object? b) (< (bytes-length b) n)) eof b))
+  (let loop ([chunks '()] [left n])
+    (cond
+      [(zero? left) (apply bytes-append (reverse chunks))]
+      [else
+       (define want (min left read-chunk-size))
+       (define b (read-bytes want in))
+       (if (or (eof-object? b) (< (bytes-length b) want))
+           eof
+           (loop (cons b chunks) (- left want)))])))
+
+;; RFC 6455 5.5: control frames carry at most 125 bytes of payload
+(define max-control-payload 125)
 
 ;; Returns (values opcode payload) or (values #f #f) on eof.
 (define (read-frame in)
@@ -119,7 +135,10 @@
          [(127) (let ([b (read-exact 8 in)]) (if (eof-object? b) #f (integer-bytes->integer b #f #t)))]
          [else len0]))
      (define mask (and len masked? (read-exact 4 in)))
-     (define payload (and len (not (eof-object? mask)) (if (zero? len) #"" (read-exact len in))))
+     ;; an oversized control frame is a protocol error: close the connection
+     (define bad-control? (and len (>= opcode op-close) (> len max-control-payload)))
+     (define payload (and len (not bad-control?) (not (eof-object? mask))
+                          (if (zero? len) #"" (read-exact len in))))
      (cond
        [(or (not payload) (eof-object? payload)) (values #f #f)]
        [else
