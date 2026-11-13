@@ -22,18 +22,39 @@
 
 (define (b64 b) (bytes->string/utf-8 (base64-encode b #"")))
 
+;; The response comes from the server: bound the length of each line and the
+;; number of header lines so the handshake cannot buffer without limit.
+(define max-header-line 8192)
+(define max-header-lines 100)
+
+;; Like (read-line in 'return-linefeed), but fails on lines longer than
+;; max-header-line bytes.
+(define (read-header-line in)
+  (define out (open-output-bytes))
+  (define (line) (bytes->string/utf-8 (get-output-bytes out) #\?))
+  (let loop ([n 0])
+    (define b (read-byte in))
+    (cond
+      [(eof-object? b) (if (zero? n) eof (line))]
+      [(and (= b 13) (eqv? (peek-byte in) 10)) (read-byte in) (line)]
+      [(>= n max-header-line) (error 'ws-connect "WebSocket handshake header line too long")]
+      [else (write-byte b out) (loop (add1 n))])))
+
 ;; Read an HTTP response header block; returns (values status-line headers-hash)
 (define (read-http-header in)
-  (define status (read-line in 'return-linefeed))
+  (define status (read-header-line in))
   (when (eof-object? status) (error 'ws-connect "connection closed during WebSocket handshake"))
   (define headers
-    (let loop ([h (hash)])
-      (define l (read-line in 'return-linefeed))
+    (let loop ([h (hash)] [n 0])
+      (when (>= n max-header-lines)
+        (error 'ws-connect "too many WebSocket handshake header lines"))
+      (define l (read-header-line in))
       (cond
         [(or (eof-object? l) (equal? l "")) h]
         [(regexp-match #px"^([^:]+):\\s*(.*)$" l)
-         => (lambda (m) (loop (hash-set h (string-downcase (cadr m)) (string-trim (caddr m)))))]
-        [else (loop h)])))
+         => (lambda (m) (loop (hash-set h (string-downcase (cadr m)) (string-trim (caddr m)))
+                              (add1 n)))]
+        [else (loop h (add1 n))])))
   (values status headers))
 
 ;; Perform the client handshake over already-connected raw ports.
