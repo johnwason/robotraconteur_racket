@@ -107,6 +107,15 @@ class TestObject:
         self._p1 = value
         value.PipeConnectCallback = self._p1_connected
 
+    @property
+    def pb(self):
+        return self._pb
+
+    @pb.setter
+    def pb(self, value):
+        self._pb = value
+        value.PipeConnectCallback = self._pb_connected
+
     def _w_out_changed(self, value, ts, ep):
         self.last_w_out = value
         print("w_out received", value, flush=True)
@@ -117,6 +126,14 @@ class TestObject:
             while ep2.Available > 0:
                 v = ep2.ReceivePacket()
                 ep2.SendPacket(np.asarray(v) * 2)
+
+        ep.PacketReceivedEvent += recv
+
+    def _pb_connected(self, ep):
+        # echo every packet back unchanged
+        def recv(ep2):
+            while ep2.Available > 0:
+                ep2.SendPacket(ep2.ReceivePacket())
 
         ep.PacketReceivedEvent += recv
 

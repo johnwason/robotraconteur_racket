@@ -1098,14 +1098,19 @@
                                       '())))))))
   pnum)
 
+;; Packets are boxed when taken from the queue: a packet can be #f (a bool
+;; pipe), which sync/timeout and async-channel-try-get also use for "nothing".
+(define (pipe-queue-evt p) (wrap-evt (pipe-endpoint-queue p) box))
+
 ;; Blocks up to timeout seconds; returns eof when the pipe is closed.
 (define (rr-pipe-receive p #:timeout [timeout 5])
-  (define v (sync/timeout timeout (pipe-endpoint-queue p)))
+  (define v (sync/timeout timeout (pipe-queue-evt p)))
   (unless v (raise-rr-error 110 "RobotRaconteur.OperationTimeout" "pipe receive timed out"))
-  v)
+  (unbox v))
 
 (define (rr-pipe-try-receive p [default #f])
-  (or (async-channel-try-get (pipe-endpoint-queue p)) default))
+  (define v (sync/timeout 0 (pipe-queue-evt p)))
+  (if v (unbox v) default))
 
 (define (rr-pipe-close p)
   (unless (pipe-endpoint-closed? p)
