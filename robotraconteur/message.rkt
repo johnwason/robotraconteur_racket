@@ -384,7 +384,24 @@
     [else
      (unless (equal? (subbytes head 0 4) #"RRAC") (error 'rr "invalid message magic"))
      (define size (integer-bytes->integer (subbytes head 4 8) #f #f))
-     (define rest (read-bytes (- size 8) in))
-     (if (or (eof-object? rest) (< (bytes-length rest) (- size 8)))
+     (when (< size 8) (error 'rr "invalid message size ~a" size))
+     (define rest (read-exact (- size 8) in))
+     (if (eof-object? rest)
          eof
          (bytes->message (bytes-append head rest)))]))
+
+;; Reads exactly n bytes, or returns eof if the stream ends first. n comes
+;; from the wire, and read-bytes allocates all n bytes before reading, so read
+;; in chunks: memory grows with the data actually received.
+(define read-chunk-size 65536)
+
+(define (read-exact n in)
+  (let loop ([chunks '()] [left n])
+    (cond
+      [(zero? left) (apply bytes-append (reverse chunks))]
+      [else
+       (define want (min left read-chunk-size))
+       (define b (read-bytes want in))
+       (if (or (eof-object? b) (< (bytes-length b) want))
+           eof
+           (loop (cons b chunks) (- left want)))])))
