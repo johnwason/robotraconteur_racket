@@ -325,6 +325,10 @@
       [(= t dt-void) #f]
       [(= t dt-string) (r-str r count)]
       [(numeric-dt? t)
+       ;; count is from the wire: check it against the data actually present
+       ;; before for/vector allocates count slots
+       (when (> (* count (dt-size t)) (- (bytes-length (rd-buf r)) (rd-pos r)))
+         (error 'rr "message truncated"))
        (for/vector #:length count ([i (in-range count)]) (read-number t r))]
       [(nested-dt? t) (for/list ([i (in-range count)]) (read-elem r))]
       [else (error 'read-elem "unknown data type ~a" t)]))

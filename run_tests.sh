@@ -43,6 +43,8 @@ exec podman run --rm --network none $TAP_OPTS -v "$PWD":/work:Z $SRC_MOUNT \
   else
     grep -v "skipping:" /tmp/setup.log | tail -30; status=1
   fi
+  echo "==== unit tests ===="
+  raco test test/unit || status=1
   raco make test/test-client.rkt test/test-reynard.rkt test/test-robot.rkt \
             test/test-wss.rkt test/test-rrs.rkt test/test-discovery.rkt test/test-zones.rkt \
             test/test-timeouts.rkt test/test-device-examples.rkt test/test-discovery-examples.rkt \
