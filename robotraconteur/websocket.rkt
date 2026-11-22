@@ -146,6 +146,9 @@
   (define h (read-exact 2 in))
   (cond
     [(eof-object? h) (values #f #f)]
+    ;; RFC 6455 5.1: a client closes the connection on a masked frame from
+    ;; the server
+    [(bitwise-bit-set? (bytes-ref h 1) 7) (values #f #f)]
     [else
      (define opcode (bitwise-and (bytes-ref h 0) #x0F))
      (define masked? (bitwise-bit-set? (bytes-ref h 1) 7))
