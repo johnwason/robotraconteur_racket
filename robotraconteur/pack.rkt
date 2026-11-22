@@ -372,7 +372,11 @@
     [(= t dt-string) d]
     [(numeric-dt? t)
      (cond
-       [(and scalar? (= (vector-length d) 1)) (vector-ref d 0)]
+       [scalar?
+        (check-scalar-type reg ns td t)
+        (unless (= (vector-length d) 1)
+          (error 'robotraconteur "expected a scalar, got ~a elements" (vector-length d)))
+        (vector-ref d 0)]
        [else d])]
     [(= t dt-vector)
      (for/hash ([x (in-list d)])
@@ -383,24 +387,57 @@
     [(= t dt-list)
      (for/list ([x (in-list d)]) (unpack-elem reg ns child-td x))]
     [(= t dt-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (elem-data (find-elem d "array")))]
+     (define a (find-elem d "array"))
+     (unless (and (numeric-dt? (elem-type a))
+                  (not (and td (numeric-primitive? (typedef-base td))
+                            (not (= (elem-type a) (prim->dt (typedef-base td)))))))
+       (error 'robotraconteur "invalid multidim array element type ~a" (elem-type a)))
+     (rr-multidim (multidim-dims d (vector-length (elem-data a))) (elem-data a))]
     [(= t dt-structure) (unpack-struct reg (elem-type-name e) d)]
     [(= t dt-pod-array)
      (define items (unpack-pod-array reg (elem-type-name e) d))
      (if (and scalar? (= (vector-length items) 1)) (vector-ref items 0) items)]
     [(= t dt-pod-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (let ([a (find-elem d "array")])
-                    (unpack-pod-array reg (elem-type-name a) (elem-data a))))]
+     (define a (find-elem d "array"))
+     (unless (= (elem-type a) dt-pod-array)
+       (error 'robotraconteur "invalid pod multidim array element type ~a" (elem-type a)))
+     (define items (unpack-pod-array reg (elem-type-name a) (elem-data a)))
+     (rr-multidim (multidim-dims d (vector-length items)) items)]
     [(= t dt-namedarray-array)
      (define items (unpack-namedarray-array reg (elem-type-name e) d))
      (if (and scalar? (= (vector-length items) 1)) (vector-ref items 0) items)]
     [(= t dt-namedarray-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (let ([a (find-elem d "array")])
-                    (unpack-namedarray-array reg (elem-type-name a) (elem-data a))))]
+     (define a (find-elem d "array"))
+     (unless (= (elem-type a) dt-namedarray-array)
+       (error 'robotraconteur "invalid namedarray multidim array element type ~a" (elem-type a)))
+     (define items (unpack-namedarray-array reg (elem-type-name a) (elem-data a)))
+     (rr-multidim (multidim-dims d (vector-length items)) items)]
     [else (error 'robotraconteur "cannot unpack data type ~a" t)]))
+
+;; A numeric element for a scalar member must have the member's type (an
+;; enum is sent as int32), as the C++ core's CastData requires.
+(define (check-scalar-type reg ns td t)
+  (define base (typedef-base td))
+  (define want
+    (cond
+      [(numeric-primitive? base) (prim->dt base)]
+      [(string? base)
+       (define-values (q kind def) (resolve-type reg ns base))
+       (and (eq? kind 'enum) dt-int32)]
+      [else #f]))
+  (unless (eqv? want t)
+    (error 'robotraconteur "data type ~a does not match ~a" t base)))
+
+;; The dims of a multidim array element: a uint32 array whose product is the
+;; number of array elements n
+(define (multidim-dims d n)
+  (define e (find-elem d "dims"))
+  (unless (= (elem-type e) dt-uint32)
+    (error 'robotraconteur "invalid multidim array dims type ~a" (elem-type e)))
+  (define dims (vector->list (elem-data e)))
+  (unless (= (vector-product dims) n)
+    (error 'robotraconteur "multidim array dims ~a do not match ~a elements" dims n))
+  dims)
 
 (define (field-members def)
   (filter (lambda (m) (eq? (member-kind m) 'field)) (entrydef-members def)))
