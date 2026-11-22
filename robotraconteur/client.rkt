@@ -133,6 +133,7 @@
               wires              ; (cons path member) -> wire-connection
               pipes              ; (list path member index) -> pipe-endpoint
               early-pipes        ; (list path member index) -> packets received before connect
+              pipe-connecting    ; (cons path member) -> indexes of connects in progress (-1: any)
               objects            ; path -> rr-object
               dispatch-ch        ; async channel of thunks (event ordering)
               [last-send #:mutable]
@@ -468,7 +469,7 @@
   (define c (conn in out (make-semaphore 1) local-nodeid nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
-                  (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
+                  (make-hash) (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
   (with-handlers ([(lambda (e) #t) (lambda (e) (shutdown! c) (raise e))])
     ;; 1. Transport handshake: StreamOp CreateConnection advertising Message V2 only
     (define cc (message (conn-local-nodeid c) (or nodeid (make-bytes 16 0)) 0 0 ""
@@ -1006,11 +1007,41 @@
 (define (rr-pipe-endpoint? x) (pipe-endpoint? x))
 (define (rr-pipe-endpoint-index p) (pipe-endpoint-index p))
 
+;; Packets for an endpoint that is not connected yet are only kept while a
+;; connect for its index (or for any index, -1) is in progress, as in the C++
+;; core (PipeClientBase connecting_endpoints): the index comes from the
+;; service, so other packets would be kept forever.
+(define pipe-connecting-lock (make-semaphore 1))
+
+(define (pipe-connecting? c k idx)
+  (define l (hash-ref (conn-pipe-connecting c) k '()))
+  (and (or (memv idx l) (memv -1 l)) #t))
+
+(define (pipe-connecting-update! c k f)
+  (call-with-semaphore
+   pipe-connecting-lock
+   (lambda ()
+     (define l (f (hash-ref (conn-pipe-connecting c) k '())))
+     (if (null? l)
+         (hash-remove! (conn-pipe-connecting c) k)
+         (hash-set! (conn-pipe-connecting c) k l)))))
+
 ;; index -1 lets the service choose the endpoint index
 (define (rr-pipe-connect obj name [index -1])
   (define-values (m ns) (find-member obj name '(pipe)))
   (define c (rr-object-conn obj))
-  (define res (req obj 'PipeConnectReq name (make-elem "index" dt-int32 (vector index))))
+  (define k (cons (rr-object-path obj) name))
+  ;; the connect is over: drop packets kept for endpoints nobody is connecting
+  (define (connect-done!)
+    (pipe-connecting-update! c k (lambda (l) (remv index l)))
+    (unless (hash-ref (conn-pipe-connecting c) k #f)
+      (for ([key (in-list (hash-keys (conn-early-pipes c)))]
+            #:when (and (equal? (car key) (car k)) (equal? (cadr key) (cdr k))))
+        (hash-remove! (conn-early-pipes c) key))))
+  (pipe-connecting-update! c k (lambda (l) (cons index l)))
+  (define res
+    (with-handlers ([(lambda (e) #t) (lambda (e) (connect-done!) (raise e))])
+      (req obj 'PipeConnectReq name (make-elem "index" dt-int32 (vector index)))))
   (define idx (vector-ref (elem-data (find-elem (entry-elements res) "index")) 0))
   (define key (list (rr-object-path obj) name idx))
   (define p (pipe-endpoint obj m ns idx (make-async-channel) 1 #f #f '() '()))
@@ -1019,6 +1050,7 @@
   (for ([v (in-list (reverse (hash-ref (conn-early-pipes c) key '())))])
     (async-channel-put (pipe-endpoint-queue p) v))
   (hash-remove! (conn-early-pipes c) key)
+  (connect-done!)
   p)
 
 (define max-early-packets 1024)
@@ -1048,7 +1080,8 @@
                                (async-channel-put (conn-dispatch-ch c) (lambda () (l p))))]
                           [else
                            (define early (hash-ref (conn-early-pipes c) key '()))
-                           (when (< (length early) max-early-packets)
+                           (when (and (pipe-connecting? c (cons path name) idx)
+                                      (< (length early) max-early-packets))
                              (hash-set! (conn-early-pipes c) key (cons v early)))])
                         (and (find-elem* d "requestack")
                              (make-elem (elem-name pe) dt-uint32 (vector pnum)))))]
