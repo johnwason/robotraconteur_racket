@@ -70,6 +70,11 @@
 (define EAGAIN 11)
 
 (define discovery-port 48653)
+;; Limits on what one discovery run keeps, as in the C++ core (Discovery.cpp:
+;; max_DiscoveredNodes 4096, and 64 candidate URLs per node from
+;; bughunt/suggest-discovery-url-cap): announcements are unauthenticated UDP
+(define max-discovered-nodes 4096)
+(define max-node-urls 64)
 (define group-ff02 (bytes-append #"\xff\x02" (make-bytes 12 0) #"\xba\x86"))
 
 (define (int-bytes v) (integer->integer-bytes v 4 #t (system-big-endian?)))
@@ -191,11 +196,14 @@
                         (sockaddr-address src)))
            (when ann
              (define id (car ann))
-             (unless (hash-has-key? nodes id) (set! order (cons id order)))
-             (define old (hash-ref nodes id (lambda () (cons (cadr ann) '()))))
-             (hash-set! nodes id
-                        (cons (if (equal? (car old) "") (cadr ann) (car old))
-                              (remove-duplicates (append (cdr old) (caddr ann))))))
+             (define known? (hash-has-key? nodes id))
+             (when (or known? (< (hash-count nodes) max-discovered-nodes))
+               (unless known? (set! order (cons id order)))
+               (define old (hash-ref nodes id (lambda () (cons (cadr ann) '()))))
+               (define urls (remove-duplicates (append (cdr old) (caddr ann))))
+               (hash-set! nodes id
+                          (cons (if (equal? (car old) "") (cadr ann) (car old))
+                                (if (> (length urls) max-node-urls) (take urls max-node-urls) urls)))))
            (loop))))
      (define start (current-inexact-milliseconds))
      (define deadline (+ start (* 1000 timeout)))
