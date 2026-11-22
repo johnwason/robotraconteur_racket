@@ -10,6 +10,7 @@
          rr-make-node-tls-context
          rr-node-tls-context?
          rr-close
+         rr-max-message-size
          rr-object?
          rr-object-path
          rr-object-type

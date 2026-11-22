@@ -96,6 +96,15 @@ is raised. Requests on an open connection time out after 30 seconds.
 @racket[ssl-context] is used for @tt{rr+wss}; see @racket[rr-make-ssl-context].
 @racket[tls-context] is used for @tt{rrs+tcp}; see @racket[rr-make-node-tls-context].}
 
+@defparam[rr-max-message-size size (or/c exact-positive-integer? #f)]{
+The largest message, in bytes, that a connection accepts from the service.
+The default is 12 MiB, the C++ core's default @tt{max_message_size}. A larger
+message closes the connection, and pending requests fail with
+@racket["RobotRaconteur.ConnectionError"]. @racket[#f] means no limit. A
+connection uses the value current when @racket[rr-connect] is called, so a
+service that sends larger messages (images, point clouds) needs, for example,
+@racket[(parameterize ([rr-max-message-size (* 100 1024 1024)]) (rr-connect url))].}
+
 @defproc[(rr-close [obj rr-object?]) void?]{
 Disconnects the connection that @racket[obj] belongs to. Other objects from
 the same connection become unusable.}
