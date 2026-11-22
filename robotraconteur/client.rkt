@@ -780,10 +780,25 @@
 
 ;; Blocks until the monitor lock is held (timeout in ms, -1 = forever).
 (define (rr-monitor-enter obj [timeout -1])
-  (let loop ([ret (session-op obj "MonitorEnter" (make-elem "timeout" dt-int32 (vector timeout)))])
+  ;; A request that times out here may still be granted by the service
+  ;; afterwards, leaving the lock held by this session with nobody to release
+  ;; it: send MonitorExit (without waiting for the reply; it also cancels a
+  ;; pending enter on the service) before reporting the timeout.
+  (define (enter-op command . elems)
+    (with-handlers ([(lambda (e) (and (exn:fail:robotraconteur? e)
+                                      (equal? (exn:fail:robotraconteur-error-name e)
+                                              "RobotRaconteur.RequestTimeout")))
+                     (lambda (e)
+                       (with-handlers ([exn:fail? void])
+                         (send-entries! (rr-object-conn obj)
+                                        (list (entry 'ClientSessionOpReq (rr-object-path obj)
+                                                     "MonitorExit" 0 0 "" '()))))
+                       (raise e))])
+      (apply session-op obj command elems)))
+  (let loop ([ret (enter-op "MonitorEnter" (make-elem "timeout" dt-int32 (vector timeout)))])
     (case ret
       [("OK") (void)]
-      [("Continue") (loop (session-op obj "MonitorContinueEnter"))]
+      [("Continue") (loop (enter-op "MonitorContinueEnter"))]
       [else (raise-rr-error 2 "RobotRaconteur.ProtocolError"
                             (format "unexpected MonitorEnter return ~a" ret))])))
 
