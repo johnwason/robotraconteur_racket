@@ -9,7 +9,9 @@
   (write-bytes (bytes-append #"RRAC" (u32 #x40000000) (make-bytes 1000 0)) out)
   (close-output-port out)
   (define before (vm-hwm-kb))
-  (check-equal? (read-message in) eof)
+  ;; with the maximum message size check (rr-max-message-size) the claim is rejected before any read
+  (check-true (with-handlers ([exn:fail? (lambda (e) (regexp-match? #rx"exceeds the maximum" (exn-message e)))])
+                (eq? (read-message in) eof)))
   (define after (vm-hwm-kb))
   (when (and before after)
     (check-true (< (- after before) (* 128 1024))
