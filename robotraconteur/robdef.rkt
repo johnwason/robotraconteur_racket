@@ -55,6 +55,24 @@
        #t))
 
 ;; ---------------------------------------------------------------------------
+;; Whitespace trimming
+
+;; Same result as racket/string's string-trim with the default separator
+;; (\s: ASCII space, tab, newline, formfeed and return), in linear time. The
+;; definition text comes from the service, and string-trim (Racket 8.10) is
+;; quadratic in the length of a whitespace run inside the string: one line
+;; with a long run of spaces took minutes. This definition shadows the
+;; racket/string import.
+(define (trim-char? c)
+  (memv c '(#\space #\tab #\newline #\page #\return)))
+
+(define (string-trim s)
+  (define n (string-length s))
+  (define start (let loop ([i 0]) (if (and (< i n) (trim-char? (string-ref s i))) (loop (add1 i)) i)))
+  (define end (let loop ([i n]) (if (and (> i start) (trim-char? (string-ref s (sub1 i)))) (loop (sub1 i)) i)))
+  (if (and (= start 0) (= end n)) s (substring s start end)))
+
+;; ---------------------------------------------------------------------------
 ;; Type parsing
 
 (define type-rx #px"^([A-Za-z_][A-Za-z0-9_.]*)(\\[[^\\]]*\\])?(\\{[^}]*\\})?$")
@@ -214,7 +232,7 @@
         [(regexp-match #px"^service\\s+(\\S+)$" l)
          => (lambda (m) (set! name (cadr m)) (loop (cdr ls)))]
         [(regexp-match #px"^import\\s+(\\S+)$" l)
-         => (lambda (m) (set! imports (append imports (list (cadr m)))) (loop (cdr ls)))]
+         => (lambda (m) (set! imports (cons (cadr m) imports)) (loop (cdr ls)))]
         [(regexp-match #px"^using\\s+(\\S+)(?:\\s+as\\s+(\\S+))?$" l)
          => (lambda (m)
               (define q (cadr m))
@@ -253,4 +271,4 @@
               (loop (if (null? rest) rest (cdr rest))))]
         [else (loop (cdr ls))])))
   (unless name (error 'parse-robdef "service definition missing service name"))
-  (servicedef name imports usings entries enums (reverse exceptions) text))
+  (servicedef name (reverse imports) usings entries enums (reverse exceptions) text))
