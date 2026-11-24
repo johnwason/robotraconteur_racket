@@ -29,7 +29,8 @@
          unpack-elem
          new-structure
          rr-struct-ref
-         rr-struct-set!)
+         rr-struct-set!
+         element-name->int32)
 
 (struct rr-struct (type fields)
   #:methods gen:custom-write
@@ -139,6 +140,16 @@
   (elem name t tn "" data))
 
 (define (number-name i) (number->string i))
+
+;; Element names that hold an integer (map{int32} keys, pipe endpoint
+;; indexes) come from the service: accept only an optional sign and decimal
+;; digits in the int32 range, as the C++ core does, else #f. string->number
+;; accepts any Racket number syntax, such as "1/2", "+inf.0", or the exact
+;; exponent "#e1e1000000000", which takes minutes and a lot of memory.
+(define (element-name->int32 s)
+  (and (regexp-match? #px"^[-+]?[0-9]{1,10}$" s)
+       (let ([n (string->number s 10)])
+         (and (<= -2147483648 n 2147483647) n))))
 
 (define (pack-data reg ns td v)
   (define base (typedef-base td))
@@ -380,7 +391,9 @@
        [else d])]
     [(= t dt-vector)
      (for/hash ([x (in-list d)])
-       (values (string->number (elem-name x)) (unpack-elem reg ns child-td x)))]
+       (values (or (element-name->int32 (elem-name x))
+                   (error 'robotraconteur "invalid map{int32} key ~e" (elem-name x)))
+               (unpack-elem reg ns child-td x)))]
     [(= t dt-dictionary)
      (for/hash ([x (in-list d)])
        (values (elem-name x) (unpack-elem reg ns child-td x)))]

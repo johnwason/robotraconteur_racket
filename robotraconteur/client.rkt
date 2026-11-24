@@ -1094,7 +1094,7 @@
   (define name (entry-member-name en))
   (define acks
     (for*/list ([pe (in-list (entry-elements en))]
-                [idx (in-value (string->number (elem-name pe)))]
+                [idx (in-value (element-name->int32 (elem-name pe)))]
                 #:when idx
                 [key (in-value (list path name idx))]
                 [p (in-value (hash-ref (conn-pipes c) key #f))]
@@ -1127,7 +1127,7 @@
 ;; PipePacketRet: one element per endpoint index holding acknowledged packet numbers
 (define (dispatch-pipe-acks! c en)
   (for ([e (in-list (entry-elements en))])
-    (define idx (string->number (elem-name e)))
+    (define idx (element-name->int32 (elem-name e)))
     (define p (and idx (hash-ref (conn-pipes c)
                                  (list (entry-service-path en) (entry-member-name en) idx) #f)))
     (when p
