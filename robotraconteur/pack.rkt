@@ -53,7 +53,47 @@
 (struct type-registry (defs))
 
 (define (make-type-registry) (type-registry (make-hash)))
-(define (registry-add-def! reg d) (hash-set! (type-registry-defs reg) (servicedef-name d) d))
+;; A definition that makes a pod or namedarray contain itself (directly or
+;; through other pods and namedarrays, in any service definition) is
+;; rejected, as the C++ core does, and the registry is left unchanged: the
+;; definitions come from the service, and the layout, packing and
+;; new-structure code would recurse forever.
+(define (registry-add-def! reg d)
+  (define defs (type-registry-defs reg))
+  (define name (servicedef-name d))
+  (define old (hash-ref defs name #f))
+  (hash-set! defs name d)
+  (with-handlers ([(lambda (e) #t)
+                   (lambda (e)
+                     (if old (hash-set! defs name old) (hash-remove! defs name))
+                     (raise e))])
+    (check-value-type-cycles reg d)))
+
+(define (check-value-type-cycles reg d)
+  (define state (make-hash)) ; qualified name -> 'active | 'done
+  (define (contained ns def)
+    ;; the pods and namedarrays a pod or namedarray has as fields (types
+    ;; that do not resolve yet are skipped; they are checked when added)
+    (for*/list ([m (in-list (entrydef-members def))]
+                #:when (eq? (member-kind m) 'field)
+                [b (in-value (typedef-base (member-type m)))]
+                #:when (string? b)
+                [r (in-value (with-handlers ([exn:fail? (lambda (e) #f)])
+                               (call-with-values (lambda () (resolve-type reg ns b)) list)))]
+                #:when (and r (memq (cadr r) '(pod namedarray))))
+      r))
+  (define (visit q def)
+    (case (hash-ref state q #f)
+      [(active) (error 'robotraconteur "pod or namedarray ~a contains itself" q)]
+      [(done) (void)]
+      [else
+       (hash-set! state q 'active)
+       (for ([r (in-list (contained (qualified-ns q) def))])
+         (visit (car r) (caddr r)))
+       (hash-set! state q 'done)]))
+  (for ([(n e) (in-hash (servicedef-entries d))]
+        #:when (memq (entrydef-kind e) '(pod namedarray)))
+    (visit (string-append (servicedef-name d) "." n) e)))
 
 ;; ---------------------------------------------------------------------------
 ;; Name resolution
