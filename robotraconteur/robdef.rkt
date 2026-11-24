@@ -59,6 +59,15 @@
 
 (define type-rx #px"^([A-Za-z_][A-Za-z0-9_.]*)(\\[[^\\]]*\\])?(\\{[^}]*\\})?$")
 
+;; An array dimension: decimal digits, in the int32 range. The text comes
+;; from the service; string->number would also accept "-1", "1/2", "1e400"
+;; or a costly exact exponent such as "#e1e1000000000".
+(define (parse-dim s)
+  (define n (and (regexp-match? #px"^[0-9]{1,10}$" s) (string->number s 10)))
+  (unless (and n (<= n 2147483647))
+    (error 'parse-type "invalid array dimension: ~e" s))
+  n)
+
 (define (parse-type str)
   (define s (string-trim str))
   (match (regexp-match type-rx s)
@@ -75,12 +84,12 @@
             [(equal? inner "*") (values 'multidim '() #t)]
             [(string-contains? inner ",")
              (values 'multidim
-                     (map (lambda (x) (string->number (string-trim x)))
+                     (map (lambda (x) (parse-dim (string-trim x)))
                           (string-split inner ","))
                      #f)]
             [(regexp-match #px"^(\\d+)-$" inner)
-             => (lambda (m) (values 'array (list (string->number (cadr m))) #t))]
-            [else (values 'array (list (string->number inner)) #f)])]))
+             => (lambda (m) (values 'array (list (parse-dim (cadr m))) #t))]
+            [else (values 'array (list (parse-dim inner)) #f)])]))
      (define container
        (and cont
             (match (string-trim (substring cont 1 (sub1 (string-length cont))))
@@ -172,6 +181,16 @@
         [_ (error 'parse-robdef "invalid enum value: ~a" part)])))
   (reverse vals))
 
+;; Pod and namedarray fields are numeric values, enums (pods only), or other
+;; pods and namedarrays, never strings, varvalues, objects or containers, as
+;; the C++ core's service definition verifier requires.
+(define (check-value-type-fields kind name members)
+  (for ([m (in-list members)] #:when (eq? (member-kind m) 'field))
+    (define td (member-type m))
+    (unless (and (not (typedef-container td))
+                 (or (numeric-primitive? (typedef-base td)) (string? (typedef-base td))))
+      (error 'parse-robdef "invalid field ~a in ~a ~a" (member-name m) kind name))))
+
 ;; ---------------------------------------------------------------------------
 ;; Top level
 
@@ -228,6 +247,8 @@
                             [mm (in-value (parse-member b))]
                             #:when mm)
                   mm))
+              (when (memq kind '(pod namedarray))
+                (check-value-type-fields kind (caddr m) members))
               (hash-set! entries (caddr m) (entrydef kind (caddr m) members implements))
               (loop (if (null? rest) rest (cdr rest))))]
         [else (loop (cdr ls))])))
