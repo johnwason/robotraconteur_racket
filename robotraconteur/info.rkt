@@ -9,7 +9,7 @@
 
 (define collection "robotraconteur")
 (define pkg-name "robotraconteur")
-(define version "0.1")
+(define version "0.1.1")
 (define pkg-desc "Robot Raconteur client: TCP, TLS, WebSocket and discovery")
 (define pkg-authors '("John Wason"))
 (define license 'Apache-2.0)
