@@ -226,6 +226,8 @@
     [(eq? t 'PipePacketRet) (dispatch-pipe-acks! c en)]
     [(eq? t 'PipeClosed)
      (define idx (elem-data (find-elem (entry-elements en) "index")))
+     (unless (and (vector? idx) (= (vector-length idx) 1) (exact-integer? (vector-ref idx 0)))
+       (error 'robotraconteur "invalid PipeClosed index"))
      (define p (hash-ref (conn-pipes c)
                          (list (entry-service-path en) (entry-member-name en) (vector-ref idx 0)) #f))
      (when p (set-pipe-endpoint-closed?! p #t) (async-channel-put (pipe-endpoint-queue p) eof))]
@@ -1089,6 +1091,17 @@
 
 (define max-early-packets 1024)
 
+;; The elements of one PipePacket entry element (from the service): a list
+;; of elements with a single unsigned packetnumber
+(define (pipe-packet-elems pe)
+  (define d (elem-data pe))
+  (unless (and (list? d) (andmap elem? d))
+    (error 'robotraconteur "invalid pipe packet ~a" (elem-name pe)))
+  (define pn (elem-data (find-elem d "packetnumber")))
+  (unless (and (vector? pn) (= (vector-length pn) 1) (exact-nonnegative-integer? (vector-ref pn 0)))
+    (error 'robotraconteur "invalid pipe packet number"))
+  d)
+
 (define (dispatch-pipe-packet! c en)
   (define path (entry-service-path en))
   (define name (entry-member-name en))
@@ -1101,7 +1114,7 @@
                 [o (in-value (hash-ref (conn-objects c) path #f))]
                 #:when (or p o)
                 [ack (in-value
-                      (let* ([d (elem-data pe)]
+                      (let* ([d (pipe-packet-elems pe)]
                              [pnum (vector-ref (elem-data (find-elem d "packetnumber")) 0)]
                              [td (if p
                                      (member-type (pipe-endpoint-member p))
@@ -1131,6 +1144,8 @@
     (define p (and idx (hash-ref (conn-pipes c)
                                  (list (entry-service-path en) (entry-member-name en) idx) #f)))
     (when p
+      (unless (and (vector? (elem-data e)) (for/and ([x (in-vector (elem-data e))]) (exact-integer? x)))
+        (error 'robotraconteur "invalid PipePacketRet packet numbers"))
       (for* ([pnum (in-vector (elem-data e))]
              [l (in-list (pipe-endpoint-ack-listeners p))])
         (async-channel-put (conn-dispatch-ch c) (lambda () (l p pnum)))))))

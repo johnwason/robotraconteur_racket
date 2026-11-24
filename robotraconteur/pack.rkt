@@ -334,10 +334,13 @@
     (define n (field-count td))
     (cond
       [(numeric-primitive? (typedef-base td)) (values (typedef-base td) (+ count n))]
-      [else
+      [(string? (typedef-base td))
        (define-values (q2 k2 d2) (resolve-type reg ns (typedef-base td)))
+       (unless (eq? k2 'namedarray)
+         (error 'robotraconteur "namedarray ~a field ~a is not numeric or a namedarray" qname (member-name m)))
        (define-values (p2 c2) (namedarray-layout reg q2 d2))
-       (values p2 (+ count (* n c2)))])))
+       (values p2 (+ count (* n c2)))]
+      [else (error 'robotraconteur "invalid namedarray ~a field ~a" qname (member-name m))])))
 
 (define (namedarray->flat reg qname def s out)
   (define ns (qualified-ns qname))
@@ -497,6 +500,8 @@
 
 (define (unpack-struct reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'struct) (error 'robotraconteur "~a is not a struct" q))
+  (check-nested "struct" elems)
   (define ns (qualified-ns q))
   (define h (make-hash))
   (for ([m (in-list (field-members def))])
@@ -504,26 +509,43 @@
     (hash-set! h (member-name m) (if e (unpack-elem reg ns (member-type m) e) 'null)))
   (rr-struct q h))
 
+;; Nested data from the service: elems must be a list of elements
+(define (check-nested who elems)
+  (unless (and (list? elems) (andmap elem? elems))
+    (error 'robotraconteur "invalid ~a data" who)))
+
+;; The number of items for a pod field must fit its type
+(define (check-field-items td name items)
+  (define n (vector-length items))
+  (case (typedef-array td)
+    [(#f) (unless (= n 1) (error 'robotraconteur "pod field ~a must have one element, got ~a" name n))]
+    [(array) (check-array-length td n)]
+    [(multidim) (unless (= n (vector-product (typedef-dims td)))
+                  (error 'robotraconteur "pod field ~a has ~a elements, expected ~a"
+                         name n (vector-product (typedef-dims td))))]))
+
 (define (unpack-pod-array reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'pod) (error 'robotraconteur "~a is not a pod" q))
+  (check-nested "pod array" elems)
   (define ns (qualified-ns q))
   (for/vector ([pe (in-list elems)])
     (define fields (elem-data pe))
+    (check-nested "pod" fields)
     (define h (make-hash))
     (for ([m (in-list (field-members def))])
       (define td (member-type m))
       (define fe (find-elem fields (member-name m)))
-      (define v
-        (field-value
-         td
-         (cond
-           [(numeric-dt? (elem-type fe)) (elem-data fe)]
-           [(= (elem-type fe) dt-pod-array)
-            (unpack-pod-array reg (elem-type-name fe) (elem-data fe))]
-           [(= (elem-type fe) dt-namedarray-array)
-            (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe))]
-           [else (error 'robotraconteur "invalid pod field ~a" (member-name m))])))
-      (hash-set! h (member-name m) v))
+      (define items
+        (cond
+          [(numeric-dt? (elem-type fe)) (elem-data fe)]
+          [(= (elem-type fe) dt-pod-array)
+           (unpack-pod-array reg (elem-type-name fe) (elem-data fe))]
+          [(= (elem-type fe) dt-namedarray-array)
+           (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe))]
+          [else (error 'robotraconteur "invalid pod field ~a" (member-name m))]))
+      (check-field-items td (member-name m) items)
+      (hash-set! h (member-name m) (field-value td items)))
     (rr-struct q h)))
 
 ;; flat: vector, pos: box index -> rr-struct
@@ -544,8 +566,16 @@
 
 (define (unpack-namedarray-array reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'namedarray) (error 'robotraconteur "~a is not a namedarray" q))
+  (check-nested "namedarray array" elems)
   (define-values (prim count) (namedarray-layout reg q def))
-  (define flat (elem-data (find-elem elems "array")))
+  (unless (and prim (> count 0)) (error 'robotraconteur "namedarray ~a has no elements" q))
+  (define a (find-elem elems "array"))
+  (unless (= (elem-type a) (prim->dt prim))
+    (error 'robotraconteur "invalid namedarray ~a array element type ~a" q (elem-type a)))
+  (define flat (elem-data a))
+  (unless (zero? (remainder (vector-length flat) count))
+    (error 'robotraconteur "namedarray ~a array length ~a is not a multiple of ~a" q (vector-length flat) count))
   (define pos (box 0))
   (for/vector ([i (in-range (quotient (vector-length flat) count))])
     (flat->namedarray reg q def flat pos)))
