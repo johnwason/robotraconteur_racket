@@ -565,14 +565,32 @@
 ;; ---------------------------------------------------------------------------
 ;; Members
 
-;; all members including those of implemented objects
+;; all members including those of implemented objects; a member of an
+;; implemented object is (cons namespace member). Each implemented object is
+;; visited once, and an implements cycle (the definitions come from the
+;; service) is a ServiceDefinitionError, as in the C++ core's
+;; VerifyObjectImplements.
 (define (object-members reg ns def)
-  (append (entrydef-members def)
-          (append*
-           (for/list ([imp (in-list (entrydef-implements def))])
-             (define-values (q k d) (resolve-type reg ns imp))
-             (map (lambda (m) (cons (car (string-split-last q)) m))
-                  (object-members reg (car (string-split-last q)) d))))))
+  (define state (make-hash)) ; qualified name -> 'active | 'done
+  (define (implemented ns def)
+    (define q (string-append ns "." (entrydef-name def)))
+    (hash-set! state q 'active)
+    (begin0
+      (append*
+       (for/list ([imp (in-list (entrydef-implements def))])
+         (define-values (q2 k d) (resolve-type reg ns imp))
+         (define ns2 (car (string-split-last q2)))
+         (unless (eq? k 'object)
+           (raise-rr-error 28 "RobotRaconteur.ServiceDefinitionError"
+                           (format "~a implements ~a, which is not an object" q q2)))
+         (case (hash-ref state q2 #f)
+           [(active) (raise-rr-error 28 "RobotRaconteur.ServiceDefinitionError"
+                                     (format "recursive implements of ~a" q2))]
+           [(done) '()]
+           [else (append (map (lambda (m) (cons ns2 m)) (entrydef-members d))
+                         (implemented ns2 d))])))
+      (hash-set! state q 'done)))
+  (append (entrydef-members def) (implemented ns def)))
 
 ;; returns (values member namespace)
 (define (find-member obj name [kinds #f])
