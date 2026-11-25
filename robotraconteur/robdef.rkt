@@ -182,10 +182,17 @@
        [else #f])]
     [_ #f]))
 
+;; regexp-replace* and string-split on a string take time quadratic in its
+;; length in Racket CS (200,000 import lines took 79 s), so the whole text and
+;; enum bodies are joined and split as UTF-8 bytes. The separators are ASCII,
+;; so every part is valid UTF-8.
+(define (split-text-bytes b rx)
+  (for/list ([p (in-list (regexp-split rx b))]) (bytes->string/utf-8 p)))
+
 (define (parse-enum-values text)
   (define-values (vals _)
     (for/fold ([acc '()] [next 0])
-              ([part (in-list (string-split text ","))]
+              ([part (in-list (split-text-bytes (string->bytes/utf-8 text) #rx#","))]
                #:unless (equal? (string-trim part) ""))
       (match (regexp-match #px"^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=\\s*([-+]?(?:0x[0-9A-Fa-f]+|\\d+)))?\\s*$" part)
         [(list _ nm #f) (values (cons (cons nm next) acc) (add1 next))]
@@ -214,9 +221,9 @@
 
 (define (parse-robdef text)
   ;; a trailing backslash continues the line
-  (define joined (regexp-replace* #px"\\\\[ \t]*\r?\n" text " "))
+  (define joined (regexp-replace* #px#"\\\\[ \t]*\r?\n" (string->bytes/utf-8 text) #" "))
   (define lines
-    (for/list ([l (in-list (string-split joined "\n"))])
+    (for/list ([l (in-list (split-text-bytes joined #rx#"\n"))])
       (string-trim (strip-comment l))))
   (define name #f)
   (define imports '())
