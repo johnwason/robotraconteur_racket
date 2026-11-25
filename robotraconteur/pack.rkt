@@ -29,7 +29,8 @@
          unpack-elem
          new-structure
          rr-struct-ref
-         rr-struct-set!)
+         rr-struct-set!
+         element-name->int32)
 
 (struct rr-struct (type fields)
   #:methods gen:custom-write
@@ -52,7 +53,47 @@
 (struct type-registry (defs))
 
 (define (make-type-registry) (type-registry (make-hash)))
-(define (registry-add-def! reg d) (hash-set! (type-registry-defs reg) (servicedef-name d) d))
+;; A definition that makes a pod or namedarray contain itself (directly or
+;; through other pods and namedarrays, in any service definition) is
+;; rejected, as the C++ core does, and the registry is left unchanged: the
+;; definitions come from the service, and the layout, packing and
+;; new-structure code would recurse forever.
+(define (registry-add-def! reg d)
+  (define defs (type-registry-defs reg))
+  (define name (servicedef-name d))
+  (define old (hash-ref defs name #f))
+  (hash-set! defs name d)
+  (with-handlers ([(lambda (e) #t)
+                   (lambda (e)
+                     (if old (hash-set! defs name old) (hash-remove! defs name))
+                     (raise e))])
+    (check-value-type-cycles reg d)))
+
+(define (check-value-type-cycles reg d)
+  (define state (make-hash)) ; qualified name -> 'active | 'done
+  (define (contained ns def)
+    ;; the pods and namedarrays a pod or namedarray has as fields (types
+    ;; that do not resolve yet are skipped; they are checked when added)
+    (for*/list ([m (in-list (entrydef-members def))]
+                #:when (eq? (member-kind m) 'field)
+                [b (in-value (typedef-base (member-type m)))]
+                #:when (string? b)
+                [r (in-value (with-handlers ([exn:fail? (lambda (e) #f)])
+                               (call-with-values (lambda () (resolve-type reg ns b)) list)))]
+                #:when (and r (memq (cadr r) '(pod namedarray))))
+      r))
+  (define (visit q def)
+    (case (hash-ref state q #f)
+      [(active) (error 'robotraconteur "pod or namedarray ~a contains itself" q)]
+      [(done) (void)]
+      [else
+       (hash-set! state q 'active)
+       (for ([r (in-list (contained (qualified-ns q) def))])
+         (visit (car r) (caddr r)))
+       (hash-set! state q 'done)]))
+  (for ([(n e) (in-hash (servicedef-entries d))]
+        #:when (memq (entrydef-kind e) '(pod namedarray)))
+    (visit (string-append (servicedef-name d) "." n) e)))
 
 ;; ---------------------------------------------------------------------------
 ;; Name resolution
@@ -139,6 +180,16 @@
   (elem name t tn "" data))
 
 (define (number-name i) (number->string i))
+
+;; Element names that hold an integer (map{int32} keys, pipe endpoint
+;; indexes) come from the service: accept only an optional sign and decimal
+;; digits in the int32 range, as the C++ core does, else #f. string->number
+;; accepts any Racket number syntax, such as "1/2", "+inf.0", or the exact
+;; exponent "#e1e1000000000", which takes minutes and a lot of memory.
+(define (element-name->int32 s)
+  (and (regexp-match? #px"^[-+]?[0-9]{1,10}$" s)
+       (let ([n (string->number s 10)])
+         (and (<= -2147483648 n 2147483647) n))))
 
 (define (pack-data reg ns td v)
   (define base (typedef-base td))
@@ -283,10 +334,13 @@
     (define n (field-count td))
     (cond
       [(numeric-primitive? (typedef-base td)) (values (typedef-base td) (+ count n))]
-      [else
+      [(string? (typedef-base td))
        (define-values (q2 k2 d2) (resolve-type reg ns (typedef-base td)))
+       (unless (eq? k2 'namedarray)
+         (error 'robotraconteur "namedarray ~a field ~a is not numeric or a namedarray" qname (member-name m)))
        (define-values (p2 c2) (namedarray-layout reg q2 d2))
-       (values p2 (+ count (* n c2)))])))
+       (values p2 (+ count (* n c2)))]
+      [else (error 'robotraconteur "invalid namedarray ~a field ~a" qname (member-name m))])))
 
 (define (namedarray->flat reg qname def s out)
   (define ns (qualified-ns qname))
@@ -372,41 +426,82 @@
     [(= t dt-string) d]
     [(numeric-dt? t)
      (cond
-       [(and scalar? (= (vector-length d) 1)) (vector-ref d 0)]
+       [scalar?
+        (check-scalar-type reg ns td t)
+        (unless (= (vector-length d) 1)
+          (error 'robotraconteur "expected a scalar, got ~a elements" (vector-length d)))
+        (vector-ref d 0)]
        [else d])]
     [(= t dt-vector)
      (for/hash ([x (in-list d)])
-       (values (string->number (elem-name x)) (unpack-elem reg ns child-td x)))]
+       (values (or (element-name->int32 (elem-name x))
+                   (error 'robotraconteur "invalid map{int32} key ~e" (elem-name x)))
+               (unpack-elem reg ns child-td x)))]
     [(= t dt-dictionary)
      (for/hash ([x (in-list d)])
        (values (elem-name x) (unpack-elem reg ns child-td x)))]
     [(= t dt-list)
      (for/list ([x (in-list d)]) (unpack-elem reg ns child-td x))]
     [(= t dt-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (elem-data (find-elem d "array")))]
+     (define a (find-elem d "array"))
+     (unless (and (numeric-dt? (elem-type a))
+                  (not (and td (numeric-primitive? (typedef-base td))
+                            (not (= (elem-type a) (prim->dt (typedef-base td)))))))
+       (error 'robotraconteur "invalid multidim array element type ~a" (elem-type a)))
+     (rr-multidim (multidim-dims d (vector-length (elem-data a))) (elem-data a))]
     [(= t dt-structure) (unpack-struct reg (elem-type-name e) d)]
     [(= t dt-pod-array)
      (define items (unpack-pod-array reg (elem-type-name e) d))
      (if (and scalar? (= (vector-length items) 1)) (vector-ref items 0) items)]
     [(= t dt-pod-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (let ([a (find-elem d "array")])
-                    (unpack-pod-array reg (elem-type-name a) (elem-data a))))]
+     (define a (find-elem d "array"))
+     (unless (= (elem-type a) dt-pod-array)
+       (error 'robotraconteur "invalid pod multidim array element type ~a" (elem-type a)))
+     (define items (unpack-pod-array reg (elem-type-name a) (elem-data a)))
+     (rr-multidim (multidim-dims d (vector-length items)) items)]
     [(= t dt-namedarray-array)
      (define items (unpack-namedarray-array reg (elem-type-name e) d))
      (if (and scalar? (= (vector-length items) 1)) (vector-ref items 0) items)]
     [(= t dt-namedarray-multidimarray)
-     (rr-multidim (vector->list (elem-data (find-elem d "dims")))
-                  (let ([a (find-elem d "array")])
-                    (unpack-namedarray-array reg (elem-type-name a) (elem-data a))))]
+     (define a (find-elem d "array"))
+     (unless (= (elem-type a) dt-namedarray-array)
+       (error 'robotraconteur "invalid namedarray multidim array element type ~a" (elem-type a)))
+     (define items (unpack-namedarray-array reg (elem-type-name a) (elem-data a)))
+     (rr-multidim (multidim-dims d (vector-length items)) items)]
     [else (error 'robotraconteur "cannot unpack data type ~a" t)]))
+
+;; A numeric element for a scalar member must have the member's type (an
+;; enum is sent as int32), as the C++ core's CastData requires.
+(define (check-scalar-type reg ns td t)
+  (define base (typedef-base td))
+  (define want
+    (cond
+      [(numeric-primitive? base) (prim->dt base)]
+      [(string? base)
+       (define-values (q kind def) (resolve-type reg ns base))
+       (and (eq? kind 'enum) dt-int32)]
+      [else #f]))
+  (unless (eqv? want t)
+    (error 'robotraconteur "data type ~a does not match ~a" t base)))
+
+;; The dims of a multidim array element: a uint32 array whose product is the
+;; number of array elements n
+(define (multidim-dims d n)
+  (define e (find-elem d "dims"))
+  (unless (= (elem-type e) dt-uint32)
+    (error 'robotraconteur "invalid multidim array dims type ~a" (elem-type e)))
+  (define dims (vector->list (elem-data e)))
+  (unless (= (vector-product dims) n)
+    (error 'robotraconteur "multidim array dims ~a do not match ~a elements" dims n))
+  dims)
 
 (define (field-members def)
   (filter (lambda (m) (eq? (member-kind m) 'field)) (entrydef-members def)))
 
 (define (unpack-struct reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'struct) (error 'robotraconteur "~a is not a struct" q))
+  (check-nested "struct" elems)
   (define ns (qualified-ns q))
   (define h (make-hash))
   (for ([m (in-list (field-members def))])
@@ -414,26 +509,43 @@
     (hash-set! h (member-name m) (if e (unpack-elem reg ns (member-type m) e) 'null)))
   (rr-struct q h))
 
+;; Nested data from the service: elems must be a list of elements
+(define (check-nested who elems)
+  (unless (and (list? elems) (andmap elem? elems))
+    (error 'robotraconteur "invalid ~a data" who)))
+
+;; The number of items for a pod field must fit its type
+(define (check-field-items td name items)
+  (define n (vector-length items))
+  (case (typedef-array td)
+    [(#f) (unless (= n 1) (error 'robotraconteur "pod field ~a must have one element, got ~a" name n))]
+    [(array) (check-array-length td n)]
+    [(multidim) (unless (= n (vector-product (typedef-dims td)))
+                  (error 'robotraconteur "pod field ~a has ~a elements, expected ~a"
+                         name n (vector-product (typedef-dims td))))]))
+
 (define (unpack-pod-array reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'pod) (error 'robotraconteur "~a is not a pod" q))
+  (check-nested "pod array" elems)
   (define ns (qualified-ns q))
   (for/vector ([pe (in-list elems)])
     (define fields (elem-data pe))
+    (check-nested "pod" fields)
     (define h (make-hash))
     (for ([m (in-list (field-members def))])
       (define td (member-type m))
       (define fe (find-elem fields (member-name m)))
-      (define v
-        (field-value
-         td
-         (cond
-           [(numeric-dt? (elem-type fe)) (elem-data fe)]
-           [(= (elem-type fe) dt-pod-array)
-            (unpack-pod-array reg (elem-type-name fe) (elem-data fe))]
-           [(= (elem-type fe) dt-namedarray-array)
-            (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe))]
-           [else (error 'robotraconteur "invalid pod field ~a" (member-name m))])))
-      (hash-set! h (member-name m) v))
+      (define items
+        (cond
+          [(numeric-dt? (elem-type fe)) (elem-data fe)]
+          [(= (elem-type fe) dt-pod-array)
+           (unpack-pod-array reg (elem-type-name fe) (elem-data fe))]
+          [(= (elem-type fe) dt-namedarray-array)
+           (unpack-namedarray-array reg (elem-type-name fe) (elem-data fe))]
+          [else (error 'robotraconteur "invalid pod field ~a" (member-name m))]))
+      (check-field-items td (member-name m) items)
+      (hash-set! h (member-name m) (field-value td items)))
     (rr-struct q h)))
 
 ;; flat: vector, pos: box index -> rr-struct
@@ -454,8 +566,16 @@
 
 (define (unpack-namedarray-array reg qname elems)
   (define-values (q kind def) (resolve-type reg "" qname))
+  (unless (eq? kind 'namedarray) (error 'robotraconteur "~a is not a namedarray" q))
+  (check-nested "namedarray array" elems)
   (define-values (prim count) (namedarray-layout reg q def))
-  (define flat (elem-data (find-elem elems "array")))
+  (unless (and prim (> count 0)) (error 'robotraconteur "namedarray ~a has no elements" q))
+  (define a (find-elem elems "array"))
+  (unless (= (elem-type a) (prim->dt prim))
+    (error 'robotraconteur "invalid namedarray ~a array element type ~a" q (elem-type a)))
+  (define flat (elem-data a))
+  (unless (zero? (remainder (vector-length flat) count))
+    (error 'robotraconteur "namedarray ~a array length ~a is not a multiple of ~a" q (vector-length flat) count))
   (define pos (box 0))
   (for/vector ([i (in-range (quotient (vector-length flat) count))])
     (flat->namedarray reg q def flat pos)))

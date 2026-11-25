@@ -81,4 +81,5 @@ object TestObject
     wire double w_out [writeonly]
 
     pipe double[] p1
+    pipe bool pb
 end

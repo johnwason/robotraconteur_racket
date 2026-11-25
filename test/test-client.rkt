@@ -209,6 +209,21 @@
   (check-equal? (rr-pipe-receive p) (vector 10.0))
   (rr-pipe-close p))
 
+(test-case "pipe packets that are #f"
+  ;; a bool pipe can carry #f, which must not look like a timeout or an empty queue
+  (define p (rr-pipe-connect c "pb"))
+  (rr-pipe-send p #f)
+  (check-equal? (rr-pipe-receive p) #f)
+  (rr-pipe-send p #t)
+  (check-equal? (rr-pipe-receive p) #t)
+  (define got (make-semaphore 0))
+  (rr-pipe-add-listener! p (lambda (ep) (semaphore-post got)))
+  (rr-pipe-send p #f)
+  (check-not-false (sync/timeout 5 got))
+  (check-equal? (rr-pipe-try-receive p 'empty) #f)
+  (check-equal? (rr-pipe-try-receive p 'empty) 'empty)
+  (rr-pipe-close p))
+
 (test-case "member errors"
   (check-exn exn:fail:robotraconteur? (lambda () (rr-get c "no_such_member")))
   (check-exn exn:fail? (lambda () (rr-call c "add" 1.0))))

@@ -22,18 +22,39 @@
 
 (define (b64 b) (bytes->string/utf-8 (base64-encode b #"")))
 
+;; The response comes from the server: bound the length of each line and the
+;; number of header lines so the handshake cannot buffer without limit.
+(define max-header-line 8192)
+(define max-header-lines 100)
+
+;; Like (read-line in 'return-linefeed), but fails on lines longer than
+;; max-header-line bytes.
+(define (read-header-line in)
+  (define out (open-output-bytes))
+  (define (line) (bytes->string/utf-8 (get-output-bytes out) #\?))
+  (let loop ([n 0])
+    (define b (read-byte in))
+    (cond
+      [(eof-object? b) (if (zero? n) eof (line))]
+      [(and (= b 13) (eqv? (peek-byte in) 10)) (read-byte in) (line)]
+      [(>= n max-header-line) (error 'ws-connect "WebSocket handshake header line too long")]
+      [else (write-byte b out) (loop (add1 n))])))
+
 ;; Read an HTTP response header block; returns (values status-line headers-hash)
 (define (read-http-header in)
-  (define status (read-line in 'return-linefeed))
+  (define status (read-header-line in))
   (when (eof-object? status) (error 'ws-connect "connection closed during WebSocket handshake"))
   (define headers
-    (let loop ([h (hash)])
-      (define l (read-line in 'return-linefeed))
+    (let loop ([h (hash)] [n 0])
+      (when (>= n max-header-lines)
+        (error 'ws-connect "too many WebSocket handshake header lines"))
+      (define l (read-header-line in))
       (cond
         [(or (eof-object? l) (equal? l "")) h]
         [(regexp-match #px"^([^:]+):\\s*(.*)$" l)
-         => (lambda (m) (loop (hash-set h (string-downcase (cadr m)) (string-trim (caddr m)))))]
-        [else (loop h)])))
+         => (lambda (m) (loop (hash-set h (string-downcase (cadr m)) (string-trim (caddr m)))
+                              (add1 n)))]
+        [else (loop h (add1 n))])))
   (values status headers))
 
 ;; Perform the client handshake over already-connected raw ports.
@@ -100,15 +121,34 @@
    mask
    masked))
 
+;; Reads exactly n bytes, or returns eof if the stream ends first. Frame
+;; lengths come from the wire (up to 2^63), and read-bytes allocates all n
+;; bytes before reading, so read in chunks: memory grows with the data
+;; actually received.
+(define read-chunk-size 65536)
+
 (define (read-exact n in)
-  (define b (read-bytes n in))
-  (if (or (eof-object? b) (< (bytes-length b) n)) eof b))
+  (let loop ([chunks '()] [left n])
+    (cond
+      [(zero? left) (apply bytes-append (reverse chunks))]
+      [else
+       (define want (min left read-chunk-size))
+       (define b (read-bytes want in))
+       (if (or (eof-object? b) (< (bytes-length b) want))
+           eof
+           (loop (cons b chunks) (- left want)))])))
+
+;; RFC 6455 5.5: control frames carry at most 125 bytes of payload
+(define max-control-payload 125)
 
 ;; Returns (values opcode payload) or (values #f #f) on eof.
 (define (read-frame in)
   (define h (read-exact 2 in))
   (cond
     [(eof-object? h) (values #f #f)]
+    ;; RFC 6455 5.1: a client closes the connection on a masked frame from
+    ;; the server
+    [(bitwise-bit-set? (bytes-ref h 1) 7) (values #f #f)]
     [else
      (define opcode (bitwise-and (bytes-ref h 0) #x0F))
      (define masked? (bitwise-bit-set? (bytes-ref h 1) 7))
@@ -119,7 +159,10 @@
          [(127) (let ([b (read-exact 8 in)]) (if (eof-object? b) #f (integer-bytes->integer b #f #t)))]
          [else len0]))
      (define mask (and len masked? (read-exact 4 in)))
-     (define payload (and len (not (eof-object? mask)) (if (zero? len) #"" (read-exact len in))))
+     ;; an oversized control frame is a protocol error: close the connection
+     (define bad-control? (and len (>= opcode op-close) (> len max-control-payload)))
+     (define payload (and len (not bad-control?) (not (eof-object? mask))
+                          (if (zero? len) #"" (read-exact len in))))
      (cond
        [(or (not payload) (eof-object? payload)) (values #f #f)]
        [else

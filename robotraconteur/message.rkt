@@ -21,6 +21,7 @@
          (struct-out elem)
          message->bytes
          read-message
+         rr-max-message-size
          bytes->message
          ;; data type codes
          dt-void dt-double dt-single dt-int8 dt-uint8 dt-int16 dt-uint16
@@ -325,6 +326,10 @@
       [(= t dt-void) #f]
       [(= t dt-string) (r-str r count)]
       [(numeric-dt? t)
+       ;; count is from the wire: check it against the data actually present
+       ;; before for/vector allocates count slots
+       (when (> (* count (dt-size t)) (- (bytes-length (rd-buf r)) (rd-pos r)))
+         (error 'rr "message truncated"))
        (for/vector #:length count ([i (in-range count)]) (read-number t r))]
       [(nested-dt? t) (for/list ([i (in-range count)]) (read-elem r))]
       [else (error 'read-elem "unknown data type ~a" t)]))
@@ -371,6 +376,22 @@
   (message sender-id receiver-id sender-ep receiver-ep sender-name receiver-name
            md mid mrid entries))
 
+;; Largest message read-message accepts, in bytes, or #f for no limit. The
+;; default is the C++ core's default max_message_size (12 MiB); a larger
+;; message raises exn:fail before its body is read, which closes the
+;; connection.
+(define rr-max-message-size
+  (make-parameter (* 12 1024 1024)
+                  (lambda (v)
+                    (unless (or (not v) (exact-positive-integer? v))
+                      (raise-argument-error 'rr-max-message-size "(or/c exact-positive-integer? #f)" v))
+                    v)))
+
+(define (check-message-size size)
+  (define max-size (rr-max-message-size))
+  (when (and max-size (> size max-size))
+    (error 'rr "message size ~a exceeds the maximum of ~a bytes (rr-max-message-size)" size max-size)))
+
 ;; Read one complete message from an input port. Returns eof on end of stream.
 (define (read-message in)
   (define head (read-bytes 8 in))
@@ -379,8 +400,26 @@
     [(< (bytes-length head) 8) eof]
     [else
      (unless (equal? (subbytes head 0 4) #"RRAC") (error 'rr "invalid message magic"))
+     (check-message-size (integer-bytes->integer (subbytes head 4 8) #f #f))
      (define size (integer-bytes->integer (subbytes head 4 8) #f #f))
-     (define rest (read-bytes (- size 8) in))
-     (if (or (eof-object? rest) (< (bytes-length rest) (- size 8)))
+     (when (< size 8) (error 'rr "invalid message size ~a" size))
+     (define rest (read-exact (- size 8) in))
+     (if (eof-object? rest)
          eof
          (bytes->message (bytes-append head rest)))]))
+
+;; Reads exactly n bytes, or returns eof if the stream ends first. n comes
+;; from the wire, and read-bytes allocates all n bytes before reading, so read
+;; in chunks: memory grows with the data actually received.
+(define read-chunk-size 65536)
+
+(define (read-exact n in)
+  (let loop ([chunks '()] [left n])
+    (cond
+      [(zero? left) (apply bytes-append (reverse chunks))]
+      [else
+       (define want (min left read-chunk-size))
+       (define b (read-bytes want in))
+       (if (or (eof-object? b) (< (bytes-length b) want))
+           eof
+           (loop (cons b chunks) (- left want)))])))

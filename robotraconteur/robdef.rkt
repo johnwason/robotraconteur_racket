@@ -55,9 +55,36 @@
        #t))
 
 ;; ---------------------------------------------------------------------------
+;; Whitespace trimming
+
+;; Same result as racket/string's string-trim with the default separator
+;; (\s: ASCII space, tab, newline, formfeed and return), in linear time. The
+;; definition text comes from the service, and string-trim (Racket 8.10) is
+;; quadratic in the length of a whitespace run inside the string: one line
+;; with a long run of spaces took minutes. This definition shadows the
+;; racket/string import.
+(define (trim-char? c)
+  (memv c '(#\space #\tab #\newline #\page #\return)))
+
+(define (string-trim s)
+  (define n (string-length s))
+  (define start (let loop ([i 0]) (if (and (< i n) (trim-char? (string-ref s i))) (loop (add1 i)) i)))
+  (define end (let loop ([i n]) (if (and (> i start) (trim-char? (string-ref s (sub1 i)))) (loop (sub1 i)) i)))
+  (if (and (= start 0) (= end n)) s (substring s start end)))
+
+;; ---------------------------------------------------------------------------
 ;; Type parsing
 
 (define type-rx #px"^([A-Za-z_][A-Za-z0-9_.]*)(\\[[^\\]]*\\])?(\\{[^}]*\\})?$")
+
+;; An array dimension: decimal digits, in the int32 range. The text comes
+;; from the service; string->number would also accept "-1", "1/2", "1e400"
+;; or a costly exact exponent such as "#e1e1000000000".
+(define (parse-dim s)
+  (define n (and (regexp-match? #px"^[0-9]{1,10}$" s) (string->number s 10)))
+  (unless (and n (<= n 2147483647))
+    (error 'parse-type "invalid array dimension: ~e" s))
+  n)
 
 (define (parse-type str)
   (define s (string-trim str))
@@ -75,12 +102,12 @@
             [(equal? inner "*") (values 'multidim '() #t)]
             [(string-contains? inner ",")
              (values 'multidim
-                     (map (lambda (x) (string->number (string-trim x)))
+                     (map (lambda (x) (parse-dim (string-trim x)))
                           (string-split inner ","))
                      #f)]
             [(regexp-match #px"^(\\d+)-$" inner)
-             => (lambda (m) (values 'array (list (string->number (cadr m))) #t))]
-            [else (values 'array (list (string->number inner)) #f)])]))
+             => (lambda (m) (values 'array (list (parse-dim (cadr m))) #t))]
+            [else (values 'array (list (parse-dim inner)) #f)])]))
      (define container
        (and cont
             (match (string-trim (substring cont 1 (sub1 (string-length cont))))
@@ -155,10 +182,17 @@
        [else #f])]
     [_ #f]))
 
+;; regexp-replace* and string-split on a string take time quadratic in its
+;; length in Racket CS (200,000 import lines took 79 s), so the whole text and
+;; enum bodies are joined and split as UTF-8 bytes. The separators are ASCII,
+;; so every part is valid UTF-8.
+(define (split-text-bytes b rx)
+  (for/list ([p (in-list (regexp-split rx b))]) (bytes->string/utf-8 p)))
+
 (define (parse-enum-values text)
   (define-values (vals _)
     (for/fold ([acc '()] [next 0])
-              ([part (in-list (string-split text ","))]
+              ([part (in-list (split-text-bytes (string->bytes/utf-8 text) #rx#","))]
                #:unless (equal? (string-trim part) ""))
       (match (regexp-match #px"^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=\\s*([-+]?(?:0x[0-9A-Fa-f]+|\\d+)))?\\s*$" part)
         [(list _ nm #f) (values (cons (cons nm next) acc) (add1 next))]
@@ -172,14 +206,24 @@
         [_ (error 'parse-robdef "invalid enum value: ~a" part)])))
   (reverse vals))
 
+;; Pod and namedarray fields are numeric values, enums (pods only), or other
+;; pods and namedarrays, never strings, varvalues, objects or containers, as
+;; the C++ core's service definition verifier requires.
+(define (check-value-type-fields kind name members)
+  (for ([m (in-list members)] #:when (eq? (member-kind m) 'field))
+    (define td (member-type m))
+    (unless (and (not (typedef-container td))
+                 (or (numeric-primitive? (typedef-base td)) (string? (typedef-base td))))
+      (error 'parse-robdef "invalid field ~a in ~a ~a" (member-name m) kind name))))
+
 ;; ---------------------------------------------------------------------------
 ;; Top level
 
 (define (parse-robdef text)
   ;; a trailing backslash continues the line
-  (define joined (regexp-replace* #px"\\\\[ \t]*\r?\n" text " "))
+  (define joined (regexp-replace* #px#"\\\\[ \t]*\r?\n" (string->bytes/utf-8 text) #" "))
   (define lines
-    (for/list ([l (in-list (string-split joined "\n"))])
+    (for/list ([l (in-list (split-text-bytes joined #rx#"\n"))])
       (string-trim (strip-comment l))))
   (define name #f)
   (define imports '())
@@ -195,7 +239,7 @@
         [(regexp-match #px"^service\\s+(\\S+)$" l)
          => (lambda (m) (set! name (cadr m)) (loop (cdr ls)))]
         [(regexp-match #px"^import\\s+(\\S+)$" l)
-         => (lambda (m) (set! imports (append imports (list (cadr m)))) (loop (cdr ls)))]
+         => (lambda (m) (set! imports (cons (cadr m) imports)) (loop (cdr ls)))]
         [(regexp-match #px"^using\\s+(\\S+)(?:\\s+as\\s+(\\S+))?$" l)
          => (lambda (m)
               (define q (cadr m))
@@ -228,8 +272,10 @@
                             [mm (in-value (parse-member b))]
                             #:when mm)
                   mm))
+              (when (memq kind '(pod namedarray))
+                (check-value-type-fields kind (caddr m) members))
               (hash-set! entries (caddr m) (entrydef kind (caddr m) members implements))
               (loop (if (null? rest) rest (cdr rest))))]
         [else (loop (cdr ls))])))
   (unless name (error 'parse-robdef "service definition missing service name"))
-  (servicedef name imports usings entries enums (reverse exceptions) text))
+  (servicedef name (reverse imports) usings entries enums (reverse exceptions) text))

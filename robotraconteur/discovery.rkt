@@ -26,6 +26,7 @@
 ;; Linux only (interfaces are read from /proc/net/if_inet6).
 
 (require ffi/unsafe ffi/unsafe/define ffi/unsafe/port racket/list racket/string
+         net/uri-codec
          "client.rkt" "pack.rkt" "net.rkt")
 
 (provide (struct-out rr-node-info)
@@ -52,8 +53,10 @@
 (define-c recvfrom (_fun #:save-errno 'posix _int _bytes _size _int _bytes (_ptr io _uint32) -> _ssize))
 (define-c close (_fun _int -> _int))
 (define-c if_indextoname (_fun _uint _bytes -> _pointer))
+(define-c inet_pton (_fun _int _string _bytes -> _int))
 
 ;; Linux values
+(define AF_INET 2)
 (define AF_INET6 10)
 (define SOCK_DGRAM 2)
 (define SOL_SOCKET 1)
@@ -67,6 +70,11 @@
 (define EAGAIN 11)
 
 (define discovery-port 48653)
+;; Limits on what one discovery run keeps, as in the C++ core (Discovery.cpp:
+;; max_DiscoveredNodes 4096, and 64 candidate URLs per node from
+;; bughunt/suggest-discovery-url-cap): announcements are unauthenticated UDP
+(define max-discovered-nodes 4096)
+(define max-node-urls 64)
 (define group-ff02 (bytes-append #"\xff\x02" (make-bytes 12 0) #"\xba\x86"))
 
 (define (int-bytes v) (integer->integer-bytes v 4 #t (system-big-endian?)))
@@ -103,17 +111,42 @@
                       (string-append "\\1\\2%25" ifname "\\3"))
       url))
 
+;; A NodeID in the form "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" (lowercase),
+;; or #f if s is not one. Braces and dashes are optional, as for the core's
+;; NodeID parser.
+(define (normalize-nodeid s)
+  (define m (regexp-match #px"^\\{?([0-9a-fA-F-]+)\\}?$" s))
+  (define hex (and m (string-downcase (string-replace (cadr m) "-" ""))))
+  (and hex (= (string-length hex) 32)
+       (format "{~a-~a-~a-~a-~a}" (substring hex 0 8) (substring hex 8 12) (substring hex 12 16)
+               (substring hex 16 20) (substring hex 20 32))))
+
+(define zero-nodeid "{00000000-0000-0000-0000-000000000000}")
+
+;; the normalized nodeid= query value of a URL, or #f
+(define (url-nodeid url)
+  (define m (regexp-match #px"[?&]nodeid=([^&#]*)" url))
+  (and m (normalize-nodeid (with-handlers ([exn:fail? (lambda (e) "")]) (uri-decode (cadr m))))))
+
 ;; Parse a node announcement; #f if it isn't one.
 ;; Returns (list nodeid nodename urls)
+;; Like the core (Discovery::NodeAnnouncePacketReceived and NodeDetected),
+;; announcements with an invalid or all-zero NodeID are ignored, and only
+;; URLs for the announced NodeID are kept: anyone on the LAN can send these.
 (define (parse-announce text ifname)
   (define lines (string-split text "\n"))
+  (define id+name
+    (and (pair? lines) (pair? (cdr lines))
+         (equal? (car lines) "Robot Raconteur Node Discovery Packet")
+         (string-split (cadr lines) "," #:trim? #f)))
+  (define id (and (pair? id+name) (normalize-nodeid (car id+name))))
   (cond
-    [(and (pair? lines) (pair? (cdr lines))
-          (equal? (car lines) "Robot Raconteur Node Discovery Packet"))
-     (define id+name (string-split (cadr lines) "," #:trim? #f))
-     (define urls (for/list ([l (in-list (cddr lines))] #:when (regexp-match? #rx"^[a-z+]+://" l))
+    [(and id (not (equal? id zero-nodeid)))
+     (define urls (for/list ([l (in-list (cddr lines))]
+                             #:when (and (regexp-match? #rx"^[a-z+]+://" l)
+                                         (equal? (url-nodeid l) id)))
                     (add-zone l ifname)))
-     (list (string-downcase (car id+name))
+     (list id
            (if (pair? (cdr id+name)) (string-join (cdr id+name) ",") "")
            urls)]
     [else #f]))
@@ -157,15 +190,20 @@
        (let loop ()
          (define n (recvfrom fd buf (bytes-length buf) MSG_DONTWAIT src 28))
          (when (> n 0)
-           (define ann (parse-announce (bytes->string/utf-8 (subbytes buf 0 n) #\?)
-                                       (index->name (sockaddr-scope src))))
+           (define ann (check-announce-sender
+                        (parse-announce (bytes->string/utf-8 (subbytes buf 0 n) #\?)
+                                        (index->name (sockaddr-scope src)))
+                        (sockaddr-address src)))
            (when ann
              (define id (car ann))
-             (unless (hash-has-key? nodes id) (set! order (cons id order)))
-             (define old (hash-ref nodes id (lambda () (cons (cadr ann) '()))))
-             (hash-set! nodes id
-                        (cons (if (equal? (car old) "") (cadr ann) (car old))
-                              (remove-duplicates (append (cdr old) (caddr ann))))))
+             (define known? (hash-has-key? nodes id))
+             (when (or known? (< (hash-count nodes) max-discovered-nodes))
+               (unless known? (set! order (cons id order)))
+               (define old (hash-ref nodes id (lambda () (cons (cadr ann) '()))))
+               (define urls (remove-duplicates (append (cdr old) (caddr ann))))
+               (hash-set! nodes id
+                          (cons (if (equal? (car old) "") (cadr ann) (car old))
+                                (if (> (length urls) max-node-urls) (take urls max-node-urls) urls)))))
            (loop))))
      (define start (current-inexact-milliseconds))
      (define deadline (+ start (* 1000 timeout)))
@@ -187,6 +225,56 @@
    (lambda ()
      (when evt (unsafe-fd->evt fd 'remove))
      (close fd))))
+
+;; The address in a URL's host as (cons 'v4|'v6 bytes), or #f if the host is
+;; not an IP address. IPv6 zones (%25eth0) are ignored.
+(define (url-host-address url)
+  (define m (regexp-match #px"^[^:]+://(?:\\[([^]%]*)(?:%[^]]*)?\\]|([^]:/?\\[]*))" url))
+  (define (pton af host n)
+    (define b (make-bytes n 0))
+    (and (= 1 (inet_pton af host b)) b))
+  (cond
+    [(not m) #f]
+    [(cadr m) => (lambda (h) (let ([b (pton AF_INET6 h 16)]) (and b (cons 'v6 b))))]
+    [else (let ([b (pton AF_INET (caddr m) 4)]) (and b (cons 'v4 b)))]))
+
+;; The sender address of a received packet (sockaddr_in6), IPv4-mapped
+;; addresses as 'v4
+(define (sockaddr-address sa)
+  (define a (subbytes sa 8 24))
+  (if (equal? (subbytes a 0 12) (bytes-append (make-bytes 10 0) #"\xff\xff"))
+      (cons 'v4 (subbytes a 12 16))
+      (cons 'v6 a)))
+
+(define (loopback-address? a)
+  (if (eq? (car a) 'v4)
+      (= (bytes-ref (cdr a) 0) 127)
+      (equal? (cdr a) (bytes-append (make-bytes 15 0) #"\1"))))
+
+;; The core's sender check for announced URLs (IPNodeDiscovery::NodeAnnounceReceived):
+;; the host must be an IP address; a loopback host only from a loopback
+;; sender; otherwise the sender's address family, and IPv6 link-local or
+;; site-local, or IPv4 in the sender's /16. A LAN host can then not make
+;; clients connect to other hosts' or their own loopback addresses.
+(define (announce-url-ok? url sender)
+  (define a (url-host-address url))
+  (cond
+    [(not a) #f]
+    [(loopback-address? a) (loopback-address? sender)]
+    [(not (eq? (car a) (car sender))) #f]
+    [(eq? (car a) 'v6)
+     (define b0 (bytes-ref (cdr a) 0))
+     (define b1 (bytes-ref (cdr a) 1))
+     ;; fe80::/10 link-local, fec0::/10 site-local
+     (and (= b0 #xfe) (memv (bitwise-and b1 #xc0) '(#x80 #xc0)) #t)]
+    [else (and (= (bytes-ref (cdr a) 0) (bytes-ref (cdr sender) 0))
+               (= (bytes-ref (cdr a) 1) (bytes-ref (cdr sender) 1)))]))
+
+;; Keep only the URLs of an announcement that pass announce-url-ok?; #f if
+;; none is left
+(define (check-announce-sender ann sender)
+  (define urls (and ann (filter (lambda (u) (announce-url-ok? u sender)) (caddr ann))))
+  (and ann (pair? urls) (list (car ann) (cadr ann) urls)))
 
 ;; --- public API
 

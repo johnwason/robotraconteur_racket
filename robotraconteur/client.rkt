@@ -10,6 +10,7 @@
          rr-make-node-tls-context
          rr-node-tls-context?
          rr-close
+         rr-max-message-size
          rr-object?
          rr-object-path
          rr-object-type
@@ -133,6 +134,7 @@
               wires              ; (cons path member) -> wire-connection
               pipes              ; (list path member index) -> pipe-endpoint
               early-pipes        ; (list path member index) -> packets received before connect
+              pipe-connecting    ; (cons path member) -> indexes of connects in progress (-1: any)
               objects            ; path -> rr-object
               dispatch-ch        ; async channel of thunks (event ordering)
               [last-send #:mutable]
@@ -224,6 +226,8 @@
     [(eq? t 'PipePacketRet) (dispatch-pipe-acks! c en)]
     [(eq? t 'PipeClosed)
      (define idx (elem-data (find-elem (entry-elements en) "index")))
+     (unless (and (vector? idx) (= (vector-length idx) 1) (exact-integer? (vector-ref idx 0)))
+       (error 'robotraconteur "invalid PipeClosed index"))
      (define p (hash-ref (conn-pipes c)
                          (list (entry-service-path en) (entry-member-name en) (vector-ref idx 0)) #f))
      (when p (set-pipe-endpoint-closed?! p #t) (async-channel-put (pipe-endpoint-queue p) eof))]
@@ -388,8 +392,8 @@
   (when (eof-object? ret)
     (raise-rr-error 1 "RobotRaconteur.ConnectionError"
                     "connection closed by server during STARTTLS (does it support TLS?)"))
-  (define ren (car (message-entries ret)))
-  (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "STARTTLS"))
+  (define ren (and (pair? (message-entries ret)) (car (message-entries ret))))
+  (unless (and ren (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "STARTTLS"))
     (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected STARTTLS response"))
   (unless (zero? (entry-error ren)) (stream-op-error ren "STARTTLS refused"))
   ;; the node the server says it is must be the node the URL asked for
@@ -468,7 +472,7 @@
   (define c (conn in out (make-semaphore 1) local-nodeid nodeid nodename
                   (random-u32) 0 (make-hash) (make-semaphore 1) 1
                   (make-type-registry) (make-hash) (make-hash) (make-hash) (make-hash)
-                  (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
+                  (make-hash) (make-hash) (make-hash) (make-async-channel) 0 #f '() (hash) service))
   (with-handlers ([(lambda (e) #t) (lambda (e) (shutdown! c) (raise e))])
     ;; 1. Transport handshake: StreamOp CreateConnection advertising Message V2 only
     (define cc (message (conn-local-nodeid c) (or nodeid (make-bytes 16 0)) 0 0 ""
@@ -479,8 +483,8 @@
     (send-message! c cc)
     (define ret (read-message in))
     (when (eof-object? ret) (raise-rr-error 1 "RobotRaconteur.ConnectionError" "connection closed during handshake"))
-    (define ren (car (message-entries ret)))
-    (unless (and (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
+    (define ren (and (pair? (message-entries ret)) (car (message-entries ret))))
+    (unless (and ren (eq? (entry-type ren) 'StreamOpRet) (equal? (entry-member-name ren) "CreateConnection"))
       (raise-rr-error 2 "RobotRaconteur.ProtocolError" "unexpected handshake response"))
     (unless (memv (entry-error ren) '(0 2)) (raise (entry->exn c ren)))
     ;; over TLS, the connection must be with the node whose certificate was checked
@@ -563,14 +567,32 @@
 ;; ---------------------------------------------------------------------------
 ;; Members
 
-;; all members including those of implemented objects
+;; all members including those of implemented objects; a member of an
+;; implemented object is (cons namespace member). Each implemented object is
+;; visited once, and an implements cycle (the definitions come from the
+;; service) is a ServiceDefinitionError, as in the C++ core's
+;; VerifyObjectImplements.
 (define (object-members reg ns def)
-  (append (entrydef-members def)
-          (append*
-           (for/list ([imp (in-list (entrydef-implements def))])
-             (define-values (q k d) (resolve-type reg ns imp))
-             (map (lambda (m) (cons (car (string-split-last q)) m))
-                  (object-members reg (car (string-split-last q)) d))))))
+  (define state (make-hash)) ; qualified name -> 'active | 'done
+  (define (implemented ns def)
+    (define q (string-append ns "." (entrydef-name def)))
+    (hash-set! state q 'active)
+    (begin0
+      (append*
+       (for/list ([imp (in-list (entrydef-implements def))])
+         (define-values (q2 k d) (resolve-type reg ns imp))
+         (define ns2 (car (string-split-last q2)))
+         (unless (eq? k 'object)
+           (raise-rr-error 28 "RobotRaconteur.ServiceDefinitionError"
+                           (format "~a implements ~a, which is not an object" q q2)))
+         (case (hash-ref state q2 #f)
+           [(active) (raise-rr-error 28 "RobotRaconteur.ServiceDefinitionError"
+                                     (format "recursive implements of ~a" q2))]
+           [(done) '()]
+           [else (append (map (lambda (m) (cons ns2 m)) (entrydef-members d))
+                         (implemented ns2 d))])))
+      (hash-set! state q 'done)))
+  (append (entrydef-members def) (implemented ns def)))
 
 ;; returns (values member namespace)
 (define (find-member obj name [kinds #f])
@@ -778,10 +800,25 @@
 
 ;; Blocks until the monitor lock is held (timeout in ms, -1 = forever).
 (define (rr-monitor-enter obj [timeout -1])
-  (let loop ([ret (session-op obj "MonitorEnter" (make-elem "timeout" dt-int32 (vector timeout)))])
+  ;; A request that times out here may still be granted by the service
+  ;; afterwards, leaving the lock held by this session with nobody to release
+  ;; it: send MonitorExit (without waiting for the reply; it also cancels a
+  ;; pending enter on the service) before reporting the timeout.
+  (define (enter-op command . elems)
+    (with-handlers ([(lambda (e) (and (exn:fail:robotraconteur? e)
+                                      (equal? (exn:fail:robotraconteur-error-name e)
+                                              "RobotRaconteur.RequestTimeout")))
+                     (lambda (e)
+                       (with-handlers ([exn:fail? void])
+                         (send-entries! (rr-object-conn obj)
+                                        (list (entry 'ClientSessionOpReq (rr-object-path obj)
+                                                     "MonitorExit" 0 0 "" '()))))
+                       (raise e))])
+      (apply session-op obj command elems)))
+  (let loop ([ret (enter-op "MonitorEnter" (make-elem "timeout" dt-int32 (vector timeout)))])
     (case ret
       [("OK") (void)]
-      [("Continue") (loop (session-op obj "MonitorContinueEnter"))]
+      [("Continue") (loop (enter-op "MonitorContinueEnter"))]
       [else (raise-rr-error 2 "RobotRaconteur.ProtocolError"
                             (format "unexpected MonitorEnter return ~a" ret))])))
 
@@ -1006,11 +1043,41 @@
 (define (rr-pipe-endpoint? x) (pipe-endpoint? x))
 (define (rr-pipe-endpoint-index p) (pipe-endpoint-index p))
 
+;; Packets for an endpoint that is not connected yet are only kept while a
+;; connect for its index (or for any index, -1) is in progress, as in the C++
+;; core (PipeClientBase connecting_endpoints): the index comes from the
+;; service, so other packets would be kept forever.
+(define pipe-connecting-lock (make-semaphore 1))
+
+(define (pipe-connecting? c k idx)
+  (define l (hash-ref (conn-pipe-connecting c) k '()))
+  (and (or (memv idx l) (memv -1 l)) #t))
+
+(define (pipe-connecting-update! c k f)
+  (call-with-semaphore
+   pipe-connecting-lock
+   (lambda ()
+     (define l (f (hash-ref (conn-pipe-connecting c) k '())))
+     (if (null? l)
+         (hash-remove! (conn-pipe-connecting c) k)
+         (hash-set! (conn-pipe-connecting c) k l)))))
+
 ;; index -1 lets the service choose the endpoint index
 (define (rr-pipe-connect obj name [index -1])
   (define-values (m ns) (find-member obj name '(pipe)))
   (define c (rr-object-conn obj))
-  (define res (req obj 'PipeConnectReq name (make-elem "index" dt-int32 (vector index))))
+  (define k (cons (rr-object-path obj) name))
+  ;; the connect is over: drop packets kept for endpoints nobody is connecting
+  (define (connect-done!)
+    (pipe-connecting-update! c k (lambda (l) (remv index l)))
+    (unless (hash-ref (conn-pipe-connecting c) k #f)
+      (for ([key (in-list (hash-keys (conn-early-pipes c)))]
+            #:when (and (equal? (car key) (car k)) (equal? (cadr key) (cdr k))))
+        (hash-remove! (conn-early-pipes c) key))))
+  (pipe-connecting-update! c k (lambda (l) (cons index l)))
+  (define res
+    (with-handlers ([(lambda (e) #t) (lambda (e) (connect-done!) (raise e))])
+      (req obj 'PipeConnectReq name (make-elem "index" dt-int32 (vector index)))))
   (define idx (vector-ref (elem-data (find-elem (entry-elements res) "index")) 0))
   (define key (list (rr-object-path obj) name idx))
   (define p (pipe-endpoint obj m ns idx (make-async-channel) 1 #f #f '() '()))
@@ -1019,23 +1086,35 @@
   (for ([v (in-list (reverse (hash-ref (conn-early-pipes c) key '())))])
     (async-channel-put (pipe-endpoint-queue p) v))
   (hash-remove! (conn-early-pipes c) key)
+  (connect-done!)
   p)
 
 (define max-early-packets 1024)
+
+;; The elements of one PipePacket entry element (from the service): a list
+;; of elements with a single unsigned packetnumber
+(define (pipe-packet-elems pe)
+  (define d (elem-data pe))
+  (unless (and (list? d) (andmap elem? d))
+    (error 'robotraconteur "invalid pipe packet ~a" (elem-name pe)))
+  (define pn (elem-data (find-elem d "packetnumber")))
+  (unless (and (vector? pn) (= (vector-length pn) 1) (exact-nonnegative-integer? (vector-ref pn 0)))
+    (error 'robotraconteur "invalid pipe packet number"))
+  d)
 
 (define (dispatch-pipe-packet! c en)
   (define path (entry-service-path en))
   (define name (entry-member-name en))
   (define acks
     (for*/list ([pe (in-list (entry-elements en))]
-                [idx (in-value (string->number (elem-name pe)))]
+                [idx (in-value (element-name->int32 (elem-name pe)))]
                 #:when idx
                 [key (in-value (list path name idx))]
                 [p (in-value (hash-ref (conn-pipes c) key #f))]
                 [o (in-value (hash-ref (conn-objects c) path #f))]
                 #:when (or p o)
                 [ack (in-value
-                      (let* ([d (elem-data pe)]
+                      (let* ([d (pipe-packet-elems pe)]
                              [pnum (vector-ref (elem-data (find-elem d "packetnumber")) 0)]
                              [td (if p
                                      (member-type (pipe-endpoint-member p))
@@ -1048,7 +1127,8 @@
                                (async-channel-put (conn-dispatch-ch c) (lambda () (l p))))]
                           [else
                            (define early (hash-ref (conn-early-pipes c) key '()))
-                           (when (< (length early) max-early-packets)
+                           (when (and (pipe-connecting? c (cons path name) idx)
+                                      (< (length early) max-early-packets))
                              (hash-set! (conn-early-pipes c) key (cons v early)))])
                         (and (find-elem* d "requestack")
                              (make-elem (elem-name pe) dt-uint32 (vector pnum)))))]
@@ -1060,10 +1140,12 @@
 ;; PipePacketRet: one element per endpoint index holding acknowledged packet numbers
 (define (dispatch-pipe-acks! c en)
   (for ([e (in-list (entry-elements en))])
-    (define idx (string->number (elem-name e)))
+    (define idx (element-name->int32 (elem-name e)))
     (define p (and idx (hash-ref (conn-pipes c)
                                  (list (entry-service-path en) (entry-member-name en) idx) #f)))
     (when p
+      (unless (and (vector? (elem-data e)) (for/and ([x (in-vector (elem-data e))]) (exact-integer? x)))
+        (error 'robotraconteur "invalid PipePacketRet packet numbers"))
       (for* ([pnum (in-vector (elem-data e))]
              [l (in-list (pipe-endpoint-ack-listeners p))])
         (async-channel-put (conn-dispatch-ch c) (lambda () (l p pnum)))))))
@@ -1098,14 +1180,19 @@
                                       '())))))))
   pnum)
 
+;; Packets are boxed when taken from the queue: a packet can be #f (a bool
+;; pipe), which sync/timeout and async-channel-try-get also use for "nothing".
+(define (pipe-queue-evt p) (wrap-evt (pipe-endpoint-queue p) box))
+
 ;; Blocks up to timeout seconds; returns eof when the pipe is closed.
 (define (rr-pipe-receive p #:timeout [timeout 5])
-  (define v (sync/timeout timeout (pipe-endpoint-queue p)))
+  (define v (sync/timeout timeout (pipe-queue-evt p)))
   (unless v (raise-rr-error 110 "RobotRaconteur.OperationTimeout" "pipe receive timed out"))
-  v)
+  (unbox v))
 
 (define (rr-pipe-try-receive p [default #f])
-  (or (async-channel-try-get (pipe-endpoint-queue p)) default))
+  (define v (sync/timeout 0 (pipe-queue-evt p)))
+  (if v (unbox v) default))
 
 (define (rr-pipe-close p)
   (unless (pipe-endpoint-closed? p)
